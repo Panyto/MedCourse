@@ -1,0 +1,17 @@
+[
+ {
+  "file": "抗菌药物临床应用指导原则_2015.txt",
+  "pdf": "20150928170007470.pdf",
+  "pdf_bytes": 813902,
+  "pdf_sha256": "3c95e66d2df5dd05ac26c754d7afbf43c94ce983794b55dab6ee1b389b235220",
+  "pages": 91,
+  "text_chars": 126002,
+  "text_sha256": "14cb74ae9d27da3600a4df21866762ea34938886581f06c1df8da8764655f271",
+  "issuer": "国家卫生计生委办公厅等 国卫办医发〔2015〕43号附件",
+  "version": "2015年版",
+  "url": "https://www.nhc.gov.cn/ewebeditor/uploadfile/2015/09/20150928170007470.pdf",
+  "page": "https://www.nhc.gov.cn/yzygj/c100068/201508/9f7136d6fb034339a7c9348c72a8a1fd.shtml",
+  "converter": "pdftotext -layout",
+  "retrieved": "2026-11-10 15:58:09"
+ }
+]

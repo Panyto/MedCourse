@@ -1,0 +1,22 @@
+{
+ "_note": "路线 B 原型 v0 的 17 个病种。版本规则（老板 11-10 批）：2019 全国版有的用 2019 版，没有的用县级版；county_alt 是同病种的县级版，只用来比版本差别。",
+ "diseases": [
+  {"id": "K80.0_acute", "name": "胆囊结石合并急性胆囊炎", "file": "nhc2019_text/胆囊结石合并急性胆囊炎临床路径（2019年版）.txt", "county_alt": "cma_county/cma_77.txt", "kind": "手术"},
+  {"id": "K80.1_chronic", "name": "慢性胆囊炎", "file": "nhc2019_text/慢性胆囊炎(双版本）临床路径（2019年版）.txt", "county_alt": "cma_county/cma_79.txt", "kind": "手术"},
+  {"id": "K56", "name": "肠梗阻", "file": "cma_county/cma_262.txt", "kind": "手术"},
+  {"id": "I84", "name": "血栓性外痔", "file": "nhc2019_text/血栓性外痔临床路径（2019年版）.txt", "county_alt": "cma_county/cma_75.txt", "kind": "手术"},
+  {"id": "N20", "name": "肾结石（经皮肾镜碎石术）", "file": "nhc2019_text/肾结石经皮肾镜碎石术临床路径（2019年版）.txt", "county_alt": "cma_county/cma_166.txt", "kind": "手术"},
+  {"id": "K85", "name": "轻症急性胰腺炎", "file": "nhc2019_text/轻症急性胰腺炎临床路径（2019年版）.txt", "county_alt": "cma_county/cma_107.txt", "kind": "非手术"},
+  {"id": "I20.0", "name": "不稳定型心绞痛介入治疗", "file": "nhc2019_text/不稳定型心绞痛介入治疗临床路径（2019年版）.txt", "kind": "介入"},
+  {"id": "I21", "name": "急性ST段抬高心肌梗死", "file": "nhc2019_text/急性ST段抬高心肌梗死临床路径（2019年版）.txt", "kind": "介入"},
+  {"id": "I25", "name": "冠状动脉粥样硬化", "file": "cma_county/cma_253.txt", "kind": "介入"},
+  {"id": "I50", "name": "心力衰竭", "file": "cma_county/cma_221.txt", "kind": "非手术"},
+  {"id": "I63", "name": "脑梗死", "file": "cma_county/cma_102.txt", "kind": "非手术"},
+  {"id": "J15", "name": "社区获得性肺炎", "file": "cma_county/cma_181.txt", "kind": "非手术"},
+  {"id": "J18.0", "name": "支气管肺炎（儿科）", "file": "nhc2019_text/支气管肺炎临床路径（2019年版）.txt", "county_alt": "cma_county/cma_205.txt", "kind": "儿科"},
+  {"id": "J21", "name": "毛细支气管炎（儿科）", "file": "cma_county/cma_126.txt", "kind": "儿科"},
+  {"id": "E11", "name": "2型糖尿病", "file": "cma_county/cma_136.txt", "kind": "非手术"},
+  {"id": "N18", "name": "终末期肾病常规血液透析导入", "file": "nhc2019_text/终末期肾病常规血液透析导入治疗临床路径（2019年版）.txt", "county_alt": "cma_county/cma_154.txt", "kind": "操作"},
+  {"id": "C18_chemo", "name": "结肠癌术后辅助化疗", "file": "cma_county/cma_129.txt", "kind": "治疗性住院"}
+ ]
+}

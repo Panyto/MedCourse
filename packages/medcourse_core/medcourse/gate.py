@@ -1,0 +1,514 @@
+"""L6 闸门 v0：第 7 节的全量硬规则，加计划对账。只出失败代码和文书序号，不出正文。
+
+节级（写完马上查，过不了就重采样）：带单位的数值要在计划里；计划要写的事实要写到；提示词字样外泄；太短。
+住院级（整次住院写完查）：g3-rules-0.3 全部规则和 N1；关1 的 G1-1、2、3、5、6；b7；跨文书 S1、S2、S3、S4b；结果提前。
+G1-4、K1–K5、B2 精确率不够，不进住院级闸门（计划 v2 第 7.2 节）。
+
+0.1.4：出院记录"入院情况"这一节（计划标 admission_only）借用 K4 的触发词做节级检查，命中就重写本节。K4 在真实病历上误报多，
+是因为长段落里混进了没认出来的"诊疗经过"；这一节由我们单独写，没有这个问题。入院前的分句（"3 年前""门诊"）照 K4 跳过。
+评测台的 K4 因此不再是独立读数，M1 的泄露看 oracle2。
+
+0.1.5：漏写的必写事实每条记一次（0.1.4 漏一条就停，重采样选优分不出漏 1 条和漏 3 条）；必写的检查结果要落在结果口吻上
+（同评测台 B_exam 的 tone_of），写成"完善 CT 检查"这类计划口吻记 result_tone_missing；"入院情况"三次都带触发词时，
+由 strip_admission_leak 剔掉带触发词的分句再交出（流程里计数）。
+
+0.1.8（第七次合成病历审阅、监督员第七轮）：节级多三项。truncated：句尾不是句号、问号、叹号（体格检查复读到 max_tokens 截在
+"双肺"，病例特点截在"可见与主要"）；repeat：同一分句 ≥8 字出现 ≥3 次，或 ≥4 字出现 ≥5 次（"双肺底可闻及细湿啰音"复读 25 遍）；
+nonsurg_postop：非手术住院写了"术后恢复""手术顺利"这类话。三次都不过时 repair_section 修补再交出：删掉重复的分句、
+截回最后一个句号、删掉非手术住院的术后句。strip_admission_leak 剔掉触发分句时，同一句里紧跟着的"示……""结果……"分句一起剔
+（0.1.7 留下"。示未见明显异常。"这种没头的半句）。
+
+0.1.9（第八次合成病历审阅）：节级多两项。pe_history：体格检查、专科情况里写了"主诉、自述、病史、否认……"（第八次 14/20 份，
+既往史写着冠心病、体格检查写"否认冠心病病史"）；hint_leak：带提示的节写了"详见另节""另述"这类话（我 0.1.8 的提示被写手照抄，2/20）。
+三次都不过时 repair_section 删掉那个分句（pe_history）或那句话（hint_leak）。
+审查员第八轮补充的"体格检查写检查结果""同一篇继续又加用同一种药"不进闸门：根因在上游（提示、查房重点给了今天才加的药），
+在上游改，读数由 out_diag 的 qa_ 单独量（闸门和读数分开，不既改又考）。
+
+0.1.12（第十一次 A256 真未来泄露 O 52/256，体格检查 12 条；老板 11-10 批准，按病历章节边界处理）：体格检查写检查结果改进节级闸门
+（pe_result：检查词表里的检查名带结果口吻，不分是不是未来的检查），三次不过删分句和紧跟的从属分句（drop_pe_results）。
+上游提示两轮没挡住（qa_adm_pe_result 6 → 7）。M1 的泄露读数仍是 oracle2，独立于这条闸门。
+
+0.1.12.1（第十二次 P30 停在泄露线：入院记录 8 → 0，剩 1 条在查房正文；老板 11-10 批准）：result_unsourced，和 number_unsourced
+一脉相承——写手写的节（出院记录除外）里，结果口吻的检查必须是截至当天已回报的（result_keys，流程按规划当天可见的结果给），
+不看未来计划；三次不过删分句（drop_results）。比 oracle2 宽：规划里根本没有的检查也拦。
+"""
+import re
+
+from .rules import setup
+from .stats import PAST_TERMS, past_matches
+
+setup()
+from b7_rules import check_record  # noqa: E402
+from q45_kit.realtext import care7_from_admission  # noqa: E402
+from ruler_g1 import evaluate_document, extract_facts, is_first_progress, split_sections  # noqa: E402
+from ruler_g2 import build_real, evaluate_admission  # noqa: E402
+from ruler_g2.events import EXAM_RE, NOT_PATH_AFTER, _ALIAS, tone_of  # noqa: E402
+from ruler_g2.text import clause_span, sentence_span  # noqa: E402
+from ruler_g2.readings import K4_RE, k4_skip  # noqa: E402
+from ruler_g3 import evaluate  # noqa: E402
+from ruler_g3.adapters import from_admission  # noqa: E402
+
+G1_GATE = {"G1-1", "G1-2", "G1-3", "G1-5", "G1-6"}
+G2_GATE = ("S1", "S2", "S3", "S4b")
+LEAK = ("【", "】", "虚构", "这一节", "只写上面", "事实", "本节要点", "书写要求", "照抄", "上一篇病程", "照搬")
+_NUM = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(mmol/L|μmol/L|umol/L|g/L|×10\^?9/L|10\^?9/L|mmHg|℃|次/分|U/L|mg/L|ng/mL|pg/mL|%|cm|mm|mg|g|ml|mL)", re.I)
+_BP = re.compile(r"(\d{2,3})\s*/\s*(\d{2,3})\s*mmHg", re.I)
+# 常规写法里的数不算"计划外数值"：溶液浓度、溶媒体积、瞳孔直径、血氧饱和度。切口长度、病灶大小这类仍算（提示词要求不写）
+_CONC = re.compile(r"\s*(?:氯化钠|葡萄糖|碳酸氢钠|利多卡因|氯化钾|甘露醇|碘伏|聚维酮碘|乙醇|酒精|硫酸镁|葡萄糖酸钙|布比卡因|罗哌卡因|氨基酸|脂肪乳|过氧化氢)")
+_VEHICLE = re.compile(r"(?:氯化钠|葡萄糖|注射用水|生理盐水|NS|GS)(?:注射液|溶液)?[^\d。；;\n]{0,3}$", re.I)
+_PUPIL = re.compile(r"瞳孔[^。；;\n]{0,10}$")
+_SPO2 = re.compile(r"(?:血氧饱和度|氧饱和度|血氧|SpO2|SaO2)[^\d。；;\n]{0,6}$", re.I)
+
+
+def routine_number(text, m):
+    """这个带单位的数是不是常规写法。"""
+    v, unit, before = float(m.group(1)), m.group(2).lower(), text[max(0, m.start() - 14):m.start()]
+    if unit == "%":
+        return bool(_CONC.match(text, m.end())) or (85 <= v <= 100 and bool(_SPO2.search(before)))
+    if unit == "ml":
+        return bool(_VEHICLE.search(before))
+    return unit == "mm" and v <= 6 and bool(_PUPIL.search(before))
+MIN_SHARE = 0.4
+_END_OK = "。！？!?"
+_CLAUSE_SPLIT = re.compile(r"[，,。；;！？!?、\n]")
+_POSTOP = re.compile(r"术后(?:恢复|第|切口|伤口|复查|康复|处理|观察|注意|病理|顺利)|手术(?:顺利|过程)|术区|切口(?:愈合|敷料|干燥)|伤口(?:愈合|敷料|干燥)")
+REPEAT_LONG, REPEAT_SHORT = (8, 3), (4, 5)
+# 0.1.9
+PE_SECTIONS = ("体格检查", "专科情况")
+PE_HISTORY = re.compile(r"主诉|自述|自诉|诉有|病史|否认|既往")
+HINT_LEAK = re.compile(r"另节|另一节|另有一节|另述|详见|另行记录|不再赘述|见上文|如上所述|已在开头")
+# 0.21：写手端高频 qa_* 章节闸门与兜底修补
+_PE_UNTESTED = re.compile(r"(?:体温|血压|脉搏|心率|呼吸)(?:频率)?未测")
+_BEFORE_OP_HARD = re.compile(r"手术(?:过程)?顺利|术中顺利|术后第|术后(?:恢复|切口|伤口|患者)")
+_BEFORE_OP_ACT = re.compile(r"今日(?:在.{0,10}下)?行|已在.{0,10}下行|已(?:顺利)?(?:行|完成).{0,16}(?:术|手术|造影|支架|置入|切除)")
+_BEFORE_OP_EXEMPT = re.compile(r"拟|计划|待|准备|预计|决定|择期|尚未|若|如|需要时|必要时|\d+年前|既往|曾")
+_ENG_PROSE = re.compile(r"(?<![A-Za-z0-9-])([A-Za-z]{4,}(?:\s+[A-Za-z]{4,})+)(?![A-Za-z0-9-])")
+_META_TEXT = re.compile(r"(?:记录|病程)(?:完整|真实)|无遗漏|内容真实|符合(?:病历)?书写规范")
+_INCISION = re.compile(r"切口|引流")
+_ADULT_CHRON_WORDS = re.compile(r"高血压|糖尿病|冠心病|冠状动脉粥样硬化|脑梗死|脑卒中|慢阻肺|慢性阻塞性肺|房颤|心房颤动")
+_GENERIC_PAST_DENY = re.compile(r"否认高血压|既往无特殊|既往体健|无高血压")
+FIXABLE = ("truncated", "repeat", "nonsurg_postop", "pe_history", "hint_leak", "pe_result", "result_unsourced", "dx_settled_early",
+           "pe_untested", "before_op_done", "no_incision_leak", "english_prose", "meta_text", "past_contradict")
+
+# 0.2.0（M1 严格档 B 2/1023，老板 11-11 批准）：诊断定论提前（dx_settled_early）。词表自己写，不 import 评测台的 oracle2（闸门和记分牌分家）。
+# 当天规划里还是"疑似"的诊断（unsettled_dx，流程按截至当天的可见状态给），写手写成确诊或排除定论、且没有考虑/待/需等缓冲词时命中。
+_DX_TENT_POST = re.compile(r"^[？?\s]*(?:[？?]|待排|待查|待明确|尚待|可能|可疑|不除外|不排除|未排|尚未排除)")
+_DX_TENT_PRE = re.compile(r"考虑|拟诊|疑似|可疑|待排|待查|待除外|不除外|不排除|尚未排除|未排除|不能排除|难以排除|需排除|需要排除|待进一步|尚待|鉴别")
+_DX_FIRM_CONF_PRE = re.compile(r"确诊(?:为)?|明确诊断(?:为)?|已确诊|证实(?:为)?")
+_DX_FIRM_CONF_POST = re.compile(r"诊断明确|已确诊|已明确|明确诊断|(?:^|[，,\s])确诊(?![？?])")
+_DX_DIAG_BEFORE = re.compile(r"诊断(?:为)?[^，,。；;\n]{0,4}$")
+_DX_MINGQUE_AFTER = re.compile(r"^\s*明确(?![？?])")
+_DX_FIRM_EXCL_PRE = re.compile(r"已排除|可排除|予以排除|基本排除|排除|除外|不支持|不考虑")
+_DX_FIRM_EXCL_POST = re.compile(r"已排除|可排除|予以排除|排除|除外")
+_DX_PLAN_SENT_PRE = re.compile(r"待|拟|完善|进一步|需|需要|查明|以便|协助")
+
+
+def settled_dx_mentions(text, unsettled, settled=()):
+    """正文里把当天仍处于疑似状态的诊断写成确诊或排除定论的位置。
+    settled：当天已确诊或已排除的更长诊断名（如"社区获得性肺炎"已排除、"肺炎"仍疑似时，不把"排除社区获得性肺炎"判成定论提前）。"""
+    t = text or ""
+    longer = [(m.start(), m.end()) for o in (settled or ()) if o and len(o) >= 2 for m in re.finditer(re.escape(o), t)]
+    out = []
+    for name in unsettled or ():
+        if not name or len(name) < 2:
+            continue
+        for m in re.finditer(re.escape(name), t):
+            s, e = m.start(), m.end()
+            if any(a0 <= s and e <= b0 and (b0 - a0) > (e - s) for a0, b0 in longer):
+                continue
+            a, b = clause_span(t, s, e)
+            pre, post = t[max(a, s - 16):s], t[e:min(b, e + 12)]
+            if _DX_TENT_POST.search(post) or _DX_TENT_PRE.search(pre):
+                continue
+            conf = bool(_DX_FIRM_CONF_PRE.search(pre) or _DX_FIRM_CONF_POST.search(post)
+                        or (_DX_DIAG_BEFORE.search(pre) and _DX_MINGQUE_AFTER.search(post)))
+            excl = False
+            if not conf and (_DX_FIRM_EXCL_PRE.search(pre) or _DX_FIRM_EXCL_POST.search(post)):
+                sa, _ = sentence_span(t, s, e)
+                excl = not _DX_PLAN_SENT_PRE.search(t[sa:s])
+            if conf or excl:
+                out.append(m)
+    return out
+
+
+def drop_settled_dx(text, unsettled, settled=()):
+    """删掉对未定论诊断下定论的分句；被删分句句末有句号时留给前一个分句。只删不添。"""
+    t = text or ""
+    starts = [m.start() for m in settled_dx_mentions(t, unsettled, settled)]
+    if not starts:
+        return t
+    out = []
+    for c in _CLAUSE_PIECE.finditer(t):
+        piece = c.group(0)
+        if any(c.start() <= s < c.end() for s in starts):
+            if piece[-1:] in "。！？!?\n" and out and out[-1][-1:] not in "。！？!?\n":
+                out[-1] = out[-1].rstrip("，,；;、") + piece[-1]
+            continue
+        out.append(piece)
+    return "".join(out)
+
+
+# 0.1.12.1：待回报、计划的说法不算结果。程序给的事实就这样写（"已开具……，待回报""待胸部CT、痰培养回报后进一步明确"），
+# 评测台的口吻判断见到"回报后"会判成结果口吻；按分句里的待办词、同一句里提及之前的计划词跳过。
+# 不按整句跳过："心电图示窦性心律，余检查待回报"前半句仍是编出来的结果
+_PEND_CLAUSE = re.compile(r"待|等待|未回|未出|尚未|结果未|安排|预约|申请|送检|需要?|拟|计划|明日|明天|进一步|完善|开具|回报后|结果将")
+_PEND_BEFORE = re.compile(r"完善|待|等待|安排|预约|申请|送检|计划|拟|开具|包括")
+
+
+def result_mentions(text, allowed=None):
+    """结果口吻的检查名（评测台检查词表）。allowed 给了时只留键不在 allowed 里的（0.1.12.1 result_unsourced）；
+    None 表示一律算（0.1.12 体格检查）。病理后面跟"征、反射"这类的不是检查（同评测台 mentions_in）。
+    allowed 给了时，待回报、计划的说法不算（_PEND_*）。"""
+    t = text or ""
+    out = []
+    for m in EXAM_RE.finditer(t):
+        key = _ALIAS[m.group(0)]
+        if key == "病理" and NOT_PATH_AFTER.match(t, m.end()):
+            continue
+        if allowed is not None and key in allowed:
+            continue
+        if tone_of(t, m.start(), m.end())[0] != "R":
+            continue
+        if allowed is not None:
+            a, b = clause_span(t, m.start(), m.end())
+            sa, _ = sentence_span(t, m.start(), m.end())
+            if _PEND_CLAUSE.search(t[a:b]) or _PEND_BEFORE.search(t[sa:m.start()]):
+                continue
+        out.append(m)
+    return out
+
+
+def pe_results(text):
+    """0.1.12（老板 11-10 批准，病历章节边界）：体格检查、专科情况只写查体所见。检查名（评测台检查词表）带结果口吻的位置。
+    第十一次 A256 体格检查 12 条真未来泄露（尿常规 8、心电图 3），提示里"不写化验、心电图和影像结果"连续两轮没挡住（6 → 7 份）。
+    比 oracle2 宽：不管是不是还没回报的检查，查体节里的检查结果一律算。"""
+    return result_mentions(text)
+
+
+def result_keys(exams):
+    """当天已回报的检查对应的检查词表键：规划的键，加上名字里能配到的别名键（规划的"心肌肌钙蛋白"，写手写"肌钙蛋白"）。"""
+    keys = set()
+    for e in exams:
+        keys.add(e["key"])
+        keys.update(_ALIAS[m.group(0)] for m in EXAM_RE.finditer(e.get("name") or ""))
+    return sorted(keys)
+
+
+def drop_pe_results(text):
+    return drop_results(text)
+
+
+def drop_results(text, allowed=None):
+    """删掉带检查结果的分句（allowed 同 result_mentions），连同紧跟着的从属分句（"示……""未见……"），到句号为止。只删不添。"""
+    t = text or ""
+    starts = [m.start() for m in result_mentions(t, allowed)]
+    out, dropping = [], False
+    for c in _CLAUSE_PIECE.finditer(t):
+        piece = c.group(0)
+        if any(c.start() <= s < c.end() for s in starts):
+            dropping = True
+            if piece[-1:] in "。！？!?\n" and out and out[-1][-1:] not in "。！？!?\n":
+                out[-1] = out[-1].rstrip("，,；;、") + piece[-1]
+        elif dropping and _DEPENDENT.match(piece.strip()):
+            if piece[-1:] in "。！？!?\n" and out and out[-1][-1:] not in "。！？!?\n":
+                out[-1] = out[-1].rstrip("，,；;、") + piece[-1]
+        else:
+            dropping = False
+            out.append(piece)
+            continue
+        if piece[-1:] in "。！？!?\n":
+            dropping = False
+    return "".join(out)
+
+
+def truncated(text):
+    t = (text or "").rstrip()
+    if not t:
+        return False
+    if t[-1] in _END_OK:
+        return False
+    return not (t[-1] in "）)”】" and len(t) > 1 and t[-2] in _END_OK)
+
+
+def repeated_clauses(text):
+    """同一节里重复太多的分句：≥8 字出现 ≥3 次，或 ≥4 字出现 ≥5 次。"""
+    cnt = {}
+    for c in _CLAUSE_SPLIT.split(text or ""):
+        c = c.strip()
+        if len(c) >= REPEAT_SHORT[0]:
+            cnt[c] = cnt.get(c, 0) + 1
+    return {c for c, n in cnt.items() if (len(c) >= REPEAT_LONG[0] and n >= REPEAT_LONG[1]) or n >= REPEAT_SHORT[1]}
+
+
+def _clean(s):
+    return re.sub(r"[\s，,。；;：:、]", "", s or "")
+
+
+def check_section(plan, text):
+    """节级。返回失败代码列表。"""
+    fails = []
+    if not text or len(text) < plan["target_chars"] * MIN_SHARE:
+        fails.append("too_short")
+    if any(w in (text or "") for w in LEAK):
+        fails.append("prompt_leak")
+    allowed = set(plan.get("allowed") or ())
+    for m in _NUM.finditer(text or ""):
+        if m.group(1) not in allowed and not routine_number(text, m):
+            fails.append("number_unsourced")
+            break
+    t = _clean(text)
+    for f in plan["facts"]:
+        if not (f["must"] and f.get("key")):
+            continue
+        key = _clean(f["key"])[:4]
+        if key not in t:
+            fails.append("fact_missing")
+        elif f.get("kind") == "result" and not any(tone_of(text, m.start(), m.end())[0] == "R" for m in re.finditer(re.escape(f["key"][:4]), text or "")):
+            fails.append("result_tone_missing")
+    if plan.get("admission_only") and admission_leaks(text):
+        fails.append("admission_leak")
+    if text and truncated(text):
+        fails.append("truncated")
+    if repeated_clauses(text):
+        fails.append("repeat")
+    if plan.get("nonsurgical") and _POSTOP.search(text or ""):
+        fails.append("nonsurg_postop")
+    if plan.get("section") in PE_SECTIONS and PE_HISTORY.search(text or ""):
+        fails.append("pe_history")
+    if plan.get("section") in PE_SECTIONS and pe_results(text):
+        fails.append("pe_result")
+    if plan.get("section") in PE_SECTIONS and _PE_UNTESTED.search(text or ""):
+        fails.append("pe_untested")
+    if plan.get("before_op") and any(_before_op_clause(c) for c in _CLAUSE_SPLIT.split(text or "") if c.strip()):
+        fails.append("before_op_done")
+    if plan.get("no_incision") and _INCISION.search(text or ""):
+        fails.append("no_incision_leak")
+    if plan.get("result_keys") is not None and result_mentions(text, set(plan["result_keys"])):
+        fails.append("result_unsourced")
+    if plan.get("unsettled_dx") and settled_dx_mentions(text, plan["unsettled_dx"], plan.get("settled_dx") or ()):
+        fails.append("dx_settled_early")
+    if plan.get("hint") and HINT_LEAK.search(text or ""):
+        fails.append("hint_leak")
+    if _ENG_PROSE.search(text or ""):
+        fails.append("english_prose")
+    if _META_TEXT.search(text or ""):
+        fails.append("meta_text")
+    if _has_past_contradict(plan, text or ""):
+        fails.append("past_contradict")
+    return fails
+
+
+def _before_op_clause(c):
+    if _BEFORE_OP_HARD.search(c):
+        return not re.search(r"风险|可能|并发症|交代|告知", c)
+    m = _BEFORE_OP_ACT.search(c)
+    return bool(m and not _BEFORE_OP_EXEMPT.search(c[:m.start() + 2]))
+
+
+def _known_past_terms(known):
+    terms = {pt for k in (known or ()) for pt in PAST_TERMS if past_matches(pt, k)}
+    for k in (known or ()):
+        if k:
+            terms.add(k)
+    return terms
+
+
+def _past_contradict_clause(c, known, child_past):
+    if child_past and _ADULT_CHRON_WORDS.search(c):
+        return True
+    if not known:
+        return False
+    if _GENERIC_PAST_DENY.search(c):
+        return True
+    return any(re.search(r"(?:否认|无)[^，,。；;\n]{0,12}" + re.escape(t), c) for t in _known_past_terms(known))
+
+
+def _has_past_contradict(plan, text):
+    if not text:
+        return False
+    known = plan.get("known_past")
+    child_past = bool(plan.get("child_past"))
+    if not known and not child_past:
+        return False
+    return any(_past_contradict_clause(c, known, child_past) for c in _CLAUSE_SPLIT.split(text) if c.strip())
+
+
+def copy_safe(plan, sent):
+    """0.21：apply_copy 拷入前先过同一份章节禁区，避免把术日未做的已手术句/无切口术式的切口句/英文或元话语拷进下一篇。"""
+    if not sent:
+        return False
+    sub = {k: plan[k] for k in ("nonsurgical", "before_op", "no_incision", "unsettled_dx", "settled_dx", "result_keys") if k in plan}
+    sub["target_chars"] = 0
+    sub["facts"] = ()
+    return not [f for f in check_section(sub, sent) if f != "number_unsourced"]
+
+
+_SENT_PIECE = re.compile(r"[^。！？!?\n]+[。！？!?\n]?")
+_CLAUSE_PIECE = re.compile(r"[^，,；;。！？!?、\n]+[，,；;。！？!?、\n]?")
+
+
+def _drop_clauses(t, rx):
+    """删掉命中 rx 的分句；被删的分句带句号时，句号留给前一个分句。"""
+    out = []
+    for m in _CLAUSE_PIECE.finditer(t):
+        c = m.group(0)
+        if rx.search(c):
+            if c[-1:] in "。！？!?\n" and out and out[-1][-1:] not in "。！？!?\n":
+                out[-1] = out[-1].rstrip("，,；;、") + c[-1]
+            continue
+        out.append(c)
+    return "".join(out)
+
+
+def repair_section(text, fails, plan=None):
+    """三次都没过时的修补（0.1.8）：repeat 删掉第二次起的重复分句；nonsurg_postop 删掉带术后话的句子；truncated 截回最后一个句号，
+    截掉的超过一半就补个句号。只删不添字。0.1.9：pe_history 删分句，hint_leak 删句子。
+    0.1.12.1：result_unsourced 按 plan 的 result_keys 删分句（plan 不给就不删这一项）。"""
+    t = text or ""
+    if "repeat" in fails:
+        bad, seen, out = repeated_clauses(t), set(), []
+        for m in _CLAUSE_PIECE.finditer(t):
+            c = m.group(0)
+            core = _CLAUSE_SPLIT.sub("", c).strip()
+            if core in bad and core in seen:
+                continue
+            seen.add(core)
+            out.append(c)
+        t = "".join(out)
+    if "nonsurg_postop" in fails:
+        t = "".join(m.group(0) for m in _SENT_PIECE.finditer(t) if not _POSTOP.search(m.group(0)))
+    if "hint_leak" in fails:
+        t = "".join(m.group(0) for m in _SENT_PIECE.finditer(t) if not HINT_LEAK.search(m.group(0)))
+    if "pe_history" in fails:
+        # 体格检查里写病史的分句删掉（"否认冠心病病史，"），保留同一句里的查体所见
+        t = _drop_clauses(t, PE_HISTORY)
+    if "pe_result" in fails:
+        t = drop_pe_results(t)
+    if "result_unsourced" in fails and plan is not None and plan.get("result_keys") is not None:
+        t = drop_results(t, set(plan["result_keys"]))
+    if "dx_settled_early" in fails and plan is not None and plan.get("unsettled_dx"):
+        t = drop_settled_dx(t, plan["unsettled_dx"], plan.get("settled_dx") or ())
+    if "pe_untested" in fails:
+        t = _drop_clauses(t, _PE_UNTESTED)
+    if "before_op_done" in fails:
+        out = []
+        for m in _CLAUSE_PIECE.finditer(t):
+            c = m.group(0)
+            if _before_op_clause(c):
+                if c[-1:] in "。！？!?\n" and out and out[-1][-1:] not in "。！？!?\n":
+                    out[-1] = out[-1].rstrip("，,；;、") + c[-1]
+                continue
+            out.append(c)
+        t = "".join(out)
+    if "no_incision_leak" in fails:
+        t = _drop_clauses(t, _INCISION)
+    if "english_prose" in fails:
+        t = _ENG_PROSE.sub("", t)
+        t = re.sub(r"[（(]\s*[）)]", "", t)
+        t = re.sub(r"\s{2,}", " ", t)
+    if "meta_text" in fails:
+        t = "".join(m.group(0) for m in _SENT_PIECE.finditer(t) if not _META_TEXT.search(m.group(0)))
+    if "past_contradict" in fails and plan is not None:
+        known = plan.get("known_past")
+        child_past = bool(plan.get("child_past"))
+        out = []
+        for m in _CLAUSE_PIECE.finditer(t):
+            c = m.group(0)
+            if _past_contradict_clause(c, known, child_past):
+                if c[-1:] in "。！？!?\n" and out and out[-1][-1:] not in "。！？!?\n":
+                    out[-1] = out[-1].rstrip("，,；;、") + c[-1]
+                continue
+            out.append(c)
+        t = "".join(out)
+        if plan.get("section") == "既往史" and len(re.sub(r"[\s，,。；;！？!?、]+", "", t)) < 4:
+            t = "既往体健，否认药物过敏史。" if (child_past or not known) else f"既往有{'、'.join(known)}病史。"
+    t = re.sub(r"[，,、；;]+(?=[。！？!?])", "", t).strip()
+    if truncated(t):
+        cut = max(t.rfind(x) for x in _END_OK)
+        if cut >= len(t) * 0.5:
+            t = t[:cut + 1]
+        else:
+            # 没有够靠后的句号：截掉最后一个逗号后面的半截（"……Velcro啰音，双肺"），逗号换成句号
+            comma = max(t.rfind(x) for x in "，,；;、")
+            t = (t[:comma] if comma >= len(t) * 0.5 else t.rstrip("，,、；; ")) + "。"
+    return t
+
+
+def admission_leaks(text):
+    """"入院情况"里写了住院后才有的事：K4 的触发词，入院前的分句（"3 年前""门诊"）跳过。"""
+    return [m for m in K4_RE.finditer(text or "") if not k4_skip(text, m)]
+
+
+_CLAUSE = re.compile(r"[^，,；;。！？!?\n]+[，,；;。！？!?\n]?")
+
+
+# 0.1.8：触发分句后面这些开头的分句接的是它（"入院后行冠脉造影，示未见明显异常"），一起剔
+_DEPENDENT = re.compile(r"^(?:示|提示|显示|结果|报告|可见|未见|考虑|给予|予以?)")
+
+
+def strip_admission_leak(text):
+    """剔掉带触发词的分句，句末补句号。重写三次都没写干净时用，保证交出的"入院情况"只有入院当时的事。
+    0.1.8：同一句里紧跟着的从属分句（_DEPENDENT 开头）一起剔，到句号为止。"""
+    keep, dropping = [], False
+    for c in _CLAUSE.finditer(text or ""):
+        piece = c.group(0)
+        if admission_leaks(piece):
+            dropping = True
+        elif not (dropping and _DEPENDENT.match(piece.strip())):
+            dropping = False
+            keep.append(piece)
+        if piece and piece[-1] in "。！？!?\n":
+            dropping = False
+    out = "".join(keep).rstrip("，,；; ")
+    out = re.sub(r"[，,；;]+(?=[。！？!?])", "", out)
+    return out + ("" if not out or out[-1] in "。！？!?" else "。")
+
+
+def _doc_kind(d):
+    if d["doc_type"] == "progress_note":
+        return "first_progress" if is_first_progress(d["text"]) else "progress_note"
+    return d["doc_type"]
+
+
+def future_leak(j, docs):
+    """结果提前：还没回报的化验数值带着项目名写进了前面的文书。返回文书序号。出院记录不查。"""
+    out = set()
+    for d in docs:
+        if d["role"] == "DS":
+            continue
+        known = {(x["item"], x["value"]) for e in j["exams"] if e["result_day"] <= d["day_offset"] for x in e["items"]}
+        for e in j["exams"]:
+            if e["result_day"] <= d["day_offset"]:
+                continue
+            for x in e["items"]:
+                if (x["item"], x["value"]) not in known and re.search(re.escape(x["item"]) + r"[^，,。；;\n]{0,5}?" + re.escape(x["value"]) + r"(?!\d)", d["text"]):
+                    out.add(d["k"])
+    return out
+
+
+def check_admission(j, docs):
+    """住院级。返回 [(文书序号或 None, 失败代码)]。"""
+    rid = j["journey_id"]
+    adm = {"admission_id": rid, "docs": docs}
+    fails = []
+    res = evaluate(from_admission(adm, rid))
+    for h in res["hits"]:
+        fails.append((int(h["seg"].split(":", 1)[0]), "g3_" + h["rule_id"]))
+    for h in res["n1"]:
+        fails.append((int(h["seg"].split(":", 1)[0]), "n1_" + h["type"]))
+    for i, d in enumerate(docs):
+        for c in evaluate_document(d["text"], rid, i, _doc_kind(d))["conflicts"]:
+            if c.pair_id in G1_GATE:
+                fails.append((d["k"], c.pair_id))
+    rec, _ = care7_from_admission(adm, split_sections, extract_facts)
+    if rec is not None:
+        for h in check_record(rec):
+            if h["rule"] != "AGE-UNPARSED":
+                fails.append((None, "b7_" + str(h["rule"])))
+    rs = evaluate_admission(build_real(adm))["readings"]
+    for k in G2_GATE:
+        if rs[k]["adm_conflict"]:
+            fails.append((None, k))
+    for k in sorted(future_leak(j, docs)):
+        fails.append((k, "future_result"))
+    return fails

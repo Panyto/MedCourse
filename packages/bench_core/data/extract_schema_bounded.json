@@ -1,0 +1,98 @@
+{
+  "type": "object",
+  "properties": {
+    "patient": {
+      "type": "object",
+      "properties": {
+        "sex": {
+          "type": "string",
+          "enum": [
+            "male",
+            "female",
+            "unknown"
+          ]
+        },
+        "age": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sex",
+        "age"
+      ],
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "diagnosis",
+              "exam",
+              "medication",
+              "procedure",
+              "vital",
+              "symptom"
+            ]
+          },
+          "assertion": {
+            "type": "string",
+            "enum": [
+              "done",
+              "planned",
+              "history",
+              "rule_out",
+              "negated"
+            ]
+          },
+          "day": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_type",
+          "assertion",
+          "day",
+          "name",
+          "value",
+          "unit",
+          "evidence"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 20
+    }
+  },
+  "required": [
+    "patient",
+    "events"
+  ],
+  "additionalProperties": false
+}

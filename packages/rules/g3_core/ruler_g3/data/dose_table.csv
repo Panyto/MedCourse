@@ -1,0 +1,24 @@
+drug_id,adult_max_daily_mg,ped_max_mgkg_day,ped_cap_daily_mg,ped_adultdose_threshold_daily_mg,source_ids,note
+amoxicillin,3000,90,3000,,S15|S16,儿童取阿莫西林克拉维酸 ES-600 的 90 mg/kg/日（同一成分里最宽的说明书值）
+amox_clav,,90,,,S16,写的量可能含克拉维酸（多出最多 25%）；成人不设上限（未核到最宽的静脉方案）
+cefuroxime,9000,240,9000,,S17,取静脉脑膜炎量；口服过量会漏
+ceftriaxone,4000,100,4000,,S18,
+ceftazidime,9000,200,6000,,S19,
+meropenem,6000,120,6000,,S20,3 个月以下也用 120（取宽）
+pip_tazo,18000,450,18000,,S21,按复方总量
+azithromycin,2000,30,1500,,S22,儿童取中耳炎单剂 30 mg/kg
+metronidazole,4000,50,4000,,S23,
+acetaminophen,4000,75,4000,,S24,只认单方名称；复方感冒药不认
+ibuprofen,3200,40,2400,,S25,二手来源（剂量汇编）
+levofloxacin,750,,,,S01,儿童按年龄禁忌另判
+moxifloxacin,400,,,,S02,
+tramadol,400,,,,S06,
+amlodipine,10,,,5,S26,
+atorvastatin,80,,,10,S27,
+rosuvastatin,40,,,5,S28,
+metformin,2550,,,1000,S29,
+metoprolol,450,,,100,S30,
+valsartan,320,,,80,S08,
+nifedipine_er,120,,,,S31,只认控释、缓释
+clopidogrel,,,,75,S32,负荷量无最宽上限可核，成人不设上限
+sitagliptin,100,,,100,S33,

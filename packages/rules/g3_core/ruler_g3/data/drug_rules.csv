@@ -1,0 +1,15 @@
+rule_id,category,severity,target,condition,systemic_only,source_ids,note
+D-AGE-LEVO,AGE,severe,drug:levofloxacin,age<18,1,S01,国内说明书明写禁用
+D-AGE-FQ,AGE,warning,class:fq-levofloxacin,age<18,1,S02,其他全身用氟喹诺酮：只核到"儿童有效性未确立"，按警示级另报，不进硬错误
+D-AGE-NIME,AGE,severe,drug:nimesulide,age<12,1,S03,只管口服；外用剂型不算
+D-AGE-COD,AGE,severe,class:codeine,age<12,1,S04,含可待因的单方和复方；双氢可待因不算
+D-AGE-TRAM,AGE,severe,class:tramadol,age<12,1,S05|S06,只管单方曲马多；氨酚曲马多不算
+D-AGE-TETRA,AGE,warning,class:tetra,age<8,1,S07,美国说明书允许重症权衡使用，只作警示级
+D-PREG-RAS,PREG,severe,class:ras,pregnant,1,S08,ACEI、ARB、沙库巴曲缬沙坦；分句里有停用、换用一类字样的不算
+D-PREG-ISO,PREG,severe,class:iso,pregnant,1,S09,外用剂型不算
+D-PREG-LEVO,PREG,severe,drug:levofloxacin,pregnant,1,S01,国内说明书明写妊娠禁用
+D-SEX-OBST,SEX,mild,class:obst,sex=M,0,S10|S11|S12,男性用缩宫素、卡前列素、米非司酮：适应症只有女性
+D-SEX-5ARI,SEX,warning,class:5ari,sex=F,0,S13,女性用度他雄胺；绝经后不算禁忌，只作警示级
+D-DOSE-ADULT,DOSE,by_ratio,dose_table:adult_max_daily_mg,age>=6 or unknown,1,see dose_table,日剂量÷成人最大日剂量：>1.5 轻微，≥2 严重；只有单次量时用单次量÷成人最大日剂量
+D-DOSE-PED,DOSE,by_ratio,dose_table:ped_max_mgkg_day,age<6,1,see dose_table|S14,上限 = 儿童最大 mg/kg/日 × 同龄男童体重中位数（WHO），再封顶；>1.5 轻微，≥2 严重
+D-PEDADULT,PEDADULT,warning,dose_table:ped_adultdose_threshold_daily_mg,age<6,1,see dose_table,说明书没有 6 岁以下用法的药，用量达到成人起始量；另报，不进硬错误
