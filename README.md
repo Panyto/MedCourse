@@ -13,7 +13,7 @@
 ```text
 MedCourse/
 ├── packages/
-│   ├── medcourse_core/         # 主线核心引擎 (v0.2.1): 统计建表/轨迹规划/按日可见编译/门控/S2抽取
+│   ├── medcourse_core/         # 主线核心引擎 (v0.3.2): 统计与路线B kb_v22/四类主诉规划/按日可见编译/轻量化门控/S2抽取
 │   ├── route_b_kit/            # 路线 B 核心包 (v0.5): 开源 8B 多轮检索式临床路径建表与引文核验
 │   ├── bench_core/             # 独立评测台 (S0 v0.2): 六维度量化指标、负对照与记分牌聚合
 │   ├── gm_tools/               # 基线对比工具与对照实验脚本 (S1)
@@ -48,18 +48,24 @@ python scripts/run_all_tests.py
 ```
 
 各模块包均保留原生目录结构与 `MANIFEST.sha256` 校验文件：
-- `medcourse_core`：186 项单元测试（涵盖 `mc-stats-0.21` 动态表回退、Copula 化验校准、双时间轴 `compiler`、节级/篇级 `gate`、两趟抽取 `extract`）
+- `medcourse_core`（`v0.3.2`）：**209 项单元测试**（涵盖 `mc-stats-0.21` 动态表回退、路线 B `kb_v22.json` 协同与 `--kb-only` 冷启动、`Copula` 化验校准、四类主诉状态机与诊断性影像耦合、双时间轴与同日术前 `k < post_k` 编译、无切口与节级/篇级 `gate`、两趟抽取 `extract`）
 - `route_b_kit`：43 项单元测试（动态规划章节切分、去病名 BM25、`DECIDE -> ANSWER` 先置引用与 `provenance` 核验）
 - `gold_kit`：11 项单元测试
 - `gm_tools`：14 项单元测试
 - `bench_core`：62 项单元测试（在安装 `scikit-learn` 的环境如 Colab 下运行全部端到端测试；纯标准库环境自动跳过需 `sklearn` 的 `TestEndToEnd`）
 
+### `medcourse_core v0.3.2` 核心演进摘要
+
+- **跨院通用国标成文与路线 B 融合**：接通 17 病种公开临床路径表 `medcourse/data/kb_v22.json` 与 `build_b_only_stats`（`--kb-only` 零私有数据冷启动）；成文提示全面对齐国家卫健委《病历书写基本规范》（支持 `Qwen/Qwen3-32B-AWQ` 免微调通用高质合成，无需单院文风拟合），关闭句级硬拼贴（`splice_copy=False`），改用前置延续注入与错误码重采样（`RETRY_GUIDANCE`）。
+- **四类主诉状态机与诊断影像耦合**：区分 `scheduled`/`obstetric`/`lesion`/`acute` 四类主诉演化，扩展产科孕周与儿科 CKD/贫血/按体重极量校验，确保器官明确的病例生成靶器官阳性诊断影像并钳位外科术前回报时序。
+- **时点与临床门禁收口 + 正则瘦身**：补齐手术当日术前边界（`day == op_d0 and k < post_k`）、经自然腔道/介入无切口约束（`no_incision_leak`）、面板级异常化验断言作用域及 `DS` 入院日期显式锚定；通过词表 `_has_any`、纯 Python `_cjk5` 前缀抽取与统一删句器 `_drop_clauses_if`，核心 4 模块（`planner.py`/`gate.py`/`compiler.py`/`kb.py`）`re.*` 调用由 157 降至 **85 处（`-45.9%`）**。
+
 ---
 
 ## 三、Google Colab Ultra 备用方案（公开/无隐私任务）
 
-当自有受控服务器算力紧张且任务**无需接触任何真实医院数据**（如扩展公开临床路径知识库、`route_b_kit` 消融测试或虚构夹具端到端调试）时，可点击顶部 **`Open in Colab`** 徽章启动 [`MedCourse_Colab_Ultra.ipynb`](colab/MedCourse_Colab_Ultra.ipynb)：
+当自有受控服务器算力紧张且任务**无需接触任何真实医院数据**（如扩展公开临床路径知识库、`route_b_kit` 消融测试、`--kb-only` 纯公开病历合成演示或虚构夹具端到端调试）时，可点击顶部 **`Open in Colab`** 徽章启动 [`MedCourse_Colab_Ultra.ipynb`](colab/MedCourse_Colab_Ultra.ipynb)：
 
-1. Runtime 选择 **`A100 GPU` + `High-RAM`**（Colab Ultra）；
-2. 可选挂载 Google Drive 持久化缓存 `Qwen/Qwen3-8B` 权重与输出；
-3. 自动拉起绑定 `127.0.0.1:8101` 的 vLLM 服务并发跑通 `route_b.build_kb_agentic` 与虚构病历合成演示。详细说明见 [`colab/README_Colab.md`](colab/README_Colab.md)。
+1. Runtime 选择 **`A100 GPU` + `High-RAM`**（或 `L4 GPU 24GB`，Colab Ultra）；
+2. 可选挂载 Google Drive 持久化缓存模型权重与输出；
+3. 自动拉起绑定 `127.0.0.1:8101` 的 vLLM 服务（`Qwen/Qwen3-32B-AWQ` 适配 `v0.3.2` 国标合成，`Qwen/Qwen3-8B` 适配路线 B 建表），支持 `run_route_b`、`run_kb_only_demo`（`--kb-only` 17 病种公开路径合成）及 `run_synthetic_fixture_demo`。详细说明见 [`colab/README_Colab.md`](colab/README_Colab.md)。

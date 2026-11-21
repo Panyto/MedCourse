@@ -82,7 +82,7 @@ def inspect_gpu() -> dict:
             gpus.append({"index": int(parts[0]), "name": parts[1], "total_mib": int(parts[2]), "free_mib": int(parts[3])})
     for g in gpus:
         vram_gb = g["total_mib"] / 1024.0
-        note = "OK for Qwen3-8B bf16 (recommended Colab Ultra A100/L4)" if vram_gb >= 22.0 else "WARNING: <22 GiB (switch Colab Ultra runtime to A100 or L4)"
+        note = "OK for Qwen/Qwen3-32B-AWQ (fits A100/L4) & Qwen/Qwen3-8B bf16" if vram_gb >= 22.0 else "WARNING: <22 GiB (switch Colab Ultra runtime to A100 or L4)"
         print(f"[GPU {g['index']}] {g['name']} | Total: {vram_gb:.1f} GiB | Free: {g['free_mib']/1024:.1f} GiB -> {note}")
     return {"available": bool(gpus), "gpus": gpus}
 
@@ -113,7 +113,7 @@ def start_vllm(
     served_name: str = None,
     max_model_len: int = 8192,
     gpu_memory_utilization: float = 0.88,
-    dtype: str = "bfloat16",
+    dtype: str = "auto",
     download_dir: str = None,
     log_path: str = "/tmp/medcourse_vllm.log",
     timeout_s: int = 420,
@@ -123,6 +123,8 @@ def start_vllm(
     if download_dir:
         _assert_public_or_synthetic(download_dir, "download_dir")
         os.makedirs(download_dir, exist_ok=True)
+    if dtype == "bfloat16" and any(k in (model or "").lower() for k in ("awq", "gptq")):
+        dtype = "auto"
     try:
         return {"proc": None, "models": wait_vllm(port=port, timeout_s=2)}
     except (TimeoutError, urllib.error.URLError):
@@ -248,4 +250,50 @@ def run_synthetic_fixture_demo(
     }
     (out_p / "demo_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print("[Demo]", summary)
+    return summary
+
+
+def run_kb_only_demo(
+    out_dir: str,
+    n: int = 4,
+    use_llm: bool = False,
+    port: int = 8101,
+    model: str = "Qwen3-32B-AWQ",
+    seed: int = 20261122,
+) -> dict:
+    """Run 100% public Route-B (--kb-only, kb_v22.json) NHC-standard synthesis without hospital stats."""
+    _assert_public_or_synthetic(out_dir, "out_dir")
+    setup_env()
+    from medcourse import kb, pipeline, writer  # noqa: E402
+    from medcourse.contract import admission_line  # noqa: E402
+
+    st = kb.build_b_only_stats()
+    if use_llm:
+        w = writer.LLMWriter(f"http://127.0.0.1:{port}/v1", model)
+        w.no_filler2 = True
+    else:
+        w = writer.TemplateWriter()
+    out_p = Path(out_dir).resolve()
+    out_p.mkdir(parents=True, exist_ok=True)
+    tally = {"planned": n, "kept": 0, "discarded": 0}
+    adms = []
+    for i in range(n):
+        jid = f"KBONLY-COLAB-{i:04d}"
+        j, docs, fails = pipeline.generate_one(jid, st, w, seed + i, None, tally)
+        if docs is None:
+            tally["discarded"] += 1
+        else:
+            tally["kept"] += 1
+            adms.append(admission_line(j, docs))
+    out_file = out_p / "admissions_kb_only_demo.jsonl"
+    out_file.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in adms) + ("\n" if adms else ""), encoding="utf-8")
+    summary = {
+        "mode": "kb_only_" + ("llm" if use_llm else "template"),
+        "kept": tally["kept"],
+        "discarded": tally["discarded"],
+        "total_docs": sum(len(a["docs"]) for a in adms),
+        "out_file": str(out_file),
+    }
+    (out_p / "kb_only_demo_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("[KB-Only Demo]", summary)
     return summary

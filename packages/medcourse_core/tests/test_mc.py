@@ -20,7 +20,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import fixtures_mc  # noqa: E402
-from medcourse import compiler, contract, gate, icd, llm, out_diag, pipeline, planner, stats, synth_export, writer  # noqa: E402
+from medcourse import compiler, contract, gate, icd, kb, llm, out_diag, pipeline, planner, stats, synth_export, writer  # noqa: E402
 from medcourse.extract import run as xrun  # noqa: E402
 from medcourse.extract import schema, segments, verify  # noqa: E402
 
@@ -1700,7 +1700,8 @@ class TestV018(unittest.TestCase):
             for s in specs:
                 for pl in compiler.compile_doc(j, s, specs, st2, rng):
                     flag = pl.get("nonsurgical", False)
-                    want = pl["mode"] == "llm" and not j["surgical"] and s["role"] in ("DS", "SUP", "DAILY")
+                    done_ops, pending_ops = compiler.op_state(j, s, specs)
+                    want = pl["mode"] == "llm" and not (done_ops + pending_ops) and s["role"] in ("DS", "SUP", "DAILY")
                     self.assertEqual(flag, want)
                     nonsurg += flag
         self.assertGreater(nonsurg, 0)
@@ -2150,8 +2151,11 @@ class TestV019(unittest.TestCase):
 
         with mock.patch.object(pipeline.gate, "check_admission", side_effect=fake):
             j, docs, fails = pipeline.generate_one("PR1", fixtures_mc.stats(), w2, 7, None, {})
-        roles = [r for r, s, _ in w2.seen]
-        self.assertEqual(roles.count("DS"), 2 * sum(1 for r, s, _ in w.seen if r == "DS"))        # 入院记录重写，出院记录跟着重写
+        ds_secs = {"入院情况", "诊疗经过", "出院情况", "出院医嘱"}
+        self.assertEqual({s for r, s, _ in w.seen if r == "DS"}, ds_secs)
+        self.assertEqual(sum(1 for r, s, _ in w.seen if r == "DS" and s == "入院情况"), 1)
+        self.assertEqual(sum(1 for r, s, _ in w2.seen if r == "DS" and s == "入院情况"), 2)      # 入院记录重写，出院记录跟着重写
+        self.assertEqual({s for r, s, _ in w2.seen[len(w.seen):] if r == "DS"}, ds_secs)
 
     def test_out_diag_v019_flags(self):
         j = {"surgical": True, "patient": {"primary_dx": {"name": "脑梗死", "organs": ["脑"]}}, "meds": [{"name": "阿托伐他汀", "drug_id": "atorvastatin"}],
@@ -2799,7 +2803,7 @@ class TestV01121(unittest.TestCase):
         for i in range(60):
             pipeline.generate_one(f"RT{i:03d}", st, writer.TemplateWriter(), 20261102, None, tally)
         self.assertEqual(tally.get("sec_result_unsourced", 0), 0, {k: v for k, v in tally.items() if k.startswith("sec_")})
-        self.assertEqual(pipeline.VERSION, "s1-pipeline-0.21.0")
+        self.assertEqual(pipeline.VERSION, "s1-pipeline-0.3.2")
 
 
 class TestV0113(unittest.TestCase):
@@ -3698,6 +3702,620 @@ class TestV021DynamicTables(unittest.TestCase):
         j1 = planner.plan_journey(st_fb1, random.Random(1234), "FB0")
         j2 = planner.plan_journey(st_fb2, random.Random(1234), "FB0")
         self.assertEqual(j1["daily"], j2["daily"])
+
+
+class TestV0211(unittest.TestCase):
+    def test_fp_copy_source_and_post_excludes_intraop(self):
+        fp = pipeline._note_copy_source("FP", {"病例特点": "特征A。", "拟诊讨论": "鉴别B。", "诊疗计划": "计划C。"})
+        self.assertEqual(fp, "特征A。鉴别B。计划C。")
+        post = pipeline._note_copy_source("POST", {"手术简要经过": "术中经过X。", "术后处理措施": "术后护理Y。"})
+        self.assertEqual(post, "术后护理Y。")
+        self.assertNotIn("术中经过X", post)
+
+    def test_sup_to_sup_copy_cap_and_budget(self):
+        st = fixtures_mc.stats()
+        sup_sp = {"role": "SUP", "doc_type_cn": "主治医师查房记录", "day": 3}
+        daily_sp = {"role": "DAILY", "doc_type_cn": "日常病程记录", "day": 3}
+        pre_sp = {"role": "PRE", "doc_type_cn": "术前小结", "day": 3}
+        self.assertIsNone(compiler.copy_max_sents(sup_sp, "FP"))
+        self.assertEqual(compiler.copy_max_sents(sup_sp, "SUP"), 1)
+        self.assertEqual(compiler.copy_max_sents(daily_sp, "SUP"), 2)
+        self.assertEqual(compiler.copy_max_sents(pre_sp, "SUP"), 2)
+        self.assertLessEqual(compiler.copy_budget(st, sup_sp, 1, prev_role="SUP"), 0.22)
+        self.assertLessEqual(compiler.copy_budget(st, daily_sp, 1, prev_role="SUP"), 0.28)
+        diag = {}
+        out, added = compiler.apply_copy(
+            "今日查房患者生命体征平稳，继续目前治疗方案并观察症状变化。",
+            "患者一般情况可，神志清楚，精神尚可，饮食睡眠正常。双肺呼吸音清，未闻及明显干湿性啰音。腹平软，全腹无压痛及反跳痛。双下肢无水肿，四肢活动自如。",
+            0.90,
+            random.Random(7),
+            diag=diag,
+            max_sents=1,
+        )
+        self.assertGreater(added, 0)
+        self.assertNotEqual(out, "")
+        self.assertEqual(diag["copy_kept_sents"], 1)
+        self.assertEqual(diag["copy_kept_sents"] + diag["copy_drop_budget"], diag["copy_pool_ok"])
+
+    def test_followup_sup_focus_rotates_and_drops_stale_diff(self):
+        j, _, _, _ = make("V0211_SUP", 1)
+        while len(j["daily"]) < 4:
+            nxt = len(j["daily"])
+            j["daily"].append(dict(j["daily"][-1], day=nxt))
+        d0, d1, d2 = 1, 2, 3
+        base_m = copy.deepcopy(j["meds"][0]) if j["meds"] else {
+            "id": "m1", "drug_id": "d1", "name": "甲药", "dose": "1g", "freq": "qd",
+            "route": "静滴", "start_day": 0, "stop_day": d2 + 2, "discharge": False,
+        }
+        j["meds"] = [
+            dict(base_m, id="m1", name="轮换甲药", start_day=0, stop_day=d2 + 2),
+            dict(base_m, id="m2", name="轮换乙药", start_day=0, stop_day=d2 + 2),
+        ]
+        dx = j["patient"]["primary_dx"]["name"]
+        j["differentials"] = ["鉴别甲病"]
+        j["dx_events"] = [
+            {"id": "d1", "name": dx, "day": d0, "state": "确诊"},
+            {"id": "d2", "name": "鉴别甲病", "day": d0, "state": "疑似"},
+        ]
+        specs = [
+            {"k": 0, "day": d0, "role": "FP", "doc_type_cn": "首次病程记录"},
+            {"k": 1, "day": d0, "role": "SUP", "doc_type_cn": "上级医师查房记录"},
+            {"k": 2, "day": d1, "role": "SUP", "doc_type_cn": "主治医师查房记录"},
+            {"k": 3, "day": d2, "role": "SUP", "doc_type_cn": "主任医师查房记录"},
+        ]
+        f1 = dict(compiler.course_focus(j, specs[1], specs, random.Random(1)))["round"]
+        f2 = dict(compiler.course_focus(j, specs[2], specs, random.Random(2)))["round"]
+        f3 = dict(compiler.course_focus(j, specs[3], specs, random.Random(3)))["round"]
+        self.assertIn(f"{dx}诊断明确", f1)
+        self.assertIn("需与鉴别甲病鉴别", f1)
+        self.assertNotIn("鉴别甲病", f2)
+        self.assertNotIn("鉴别甲病", f3)
+        self.assertTrue(any(t in f2 for t in compiler.SUP_FOLLOWUP_THEMES))
+        self.assertTrue(any(t in f3 for t in compiler.SUP_FOLLOWUP_THEMES))
+        self.assertNotEqual(f2.split("：")[1].split("，")[0], f3.split("：")[1].split("，")[0])
+        self.assertIn("轮换乙药", f1)
+        self.assertIn("轮换甲药", f2)
+        self.assertIn("轮换乙药", f3)
+
+
+class TestV0212Fixes(unittest.TestCase):
+    def test_age_dept_proc_chief_coupling(self):
+        self.assertFalse(planner.sym_ok("哭闹", {"age": 80, "sex": "男"}))
+        self.assertTrue(planner.sym_ok("哭闹", {"age": 2, "sex": "男"}))
+        self.assertFalse(planner.sym_ok("停经", {"age": 35, "sex": "男"}))
+        self.assertFalse(planner.sym_ok("停经", {"age": 62, "sex": "女"}))
+        self.assertTrue(planner.sym_ok("停经", {"age": 32, "sex": "女"}))
+        self.assertFalse(planner.sym_ok("语言落后", {"age": 57, "sex": "女"}))
+        self.assertFalse(planner.dx_ok("言语和语言发育障碍", "女", 57))
+        self.assertFalse(planner.dept_ok("风湿免疫科(肾内二区)", "男", 80, False, "N43"))
+        self.assertTrue(planner.dept_ok("泌尿外科", "男", 80, False, "N43"))
+        self.assertTrue(planner.dept_ok("风湿免疫科", "女", 40, False, "M05"))
+
+        st = fixtures_mc.stats()
+        st["procedures"]["N43"] = {"n": 20, "items": {"右侧腹腔镜鞘状突高位结扎术": 15}}
+        self.assertEqual(planner.proc_for(st, ["n:鞘膜积液", "N43", "N"], "鞘膜积液", age=80), ({}, None))
+        items, src = planner.proc_for(st, ["n:鞘膜积液", "N43", "N"], "鞘膜积液", age=5)
+        self.assertEqual(src, "key")
+        self.assertIn("右侧腹腔镜鞘状突高位结扎术", items)
+
+        # 产科妊娠主诉带"停经"时时长与 gest_weeks 一致
+        st_preg = fixtures_mc.stats()
+        st_preg["joint"]["items"] = {"女|18-40|O": 50}
+        st_preg["code3"]["O"] = {"n": 50, "items": {"O80": 50}}
+        st_preg["dx_names"]["O80"] = {"n": 50, "items": {"孕39周待产": 50}}
+        st_preg["chief_symptoms"]["O80"] = {"n": 50, "items": {"停经": 50}}
+        st_preg["durations"]["O80"] = {"n": 50, "items": {"1周": 50}}
+        j = planner.plan_journey(st_preg, random.Random(1), "PREG1")
+        self.assertEqual(j["patient"]["gest_weeks"], 39)
+        self.assertEqual(j["chief"]["duration"], "39周")
+
+    def test_natural_orifice_no_incision_and_copy_plan_guard(self):
+        self.assertTrue(compiler.no_incision({"name": "经尿道右侧输尿管软镜钬激光碎石取石术", "anesthesia": "腰硬联合麻醉"}))
+        self.assertFalse(compiler.no_incision({"name": "腹腔镜下胆囊切除术", "anesthesia": "全身麻醉"}))
+        kept = compiler.stable_sentences("泌尿系X线检查结果示未见明显异常，尚未实施手术。尚未实施手术。患者配合治疗，饮食睡眠可。")
+        self.assertEqual(kept, ["患者配合治疗，饮食睡眠可。"])
+
+        j, specs, st, _ = make("FP_TENT", 2)
+        dx = j["patient"]["primary_dx"]["name"]
+        j["dx_events"] = [{"id": "d1", "name": dx, "day": 0, "state": "疑似"}]
+        fp = next(s for s in specs if s["role"] == "FP")
+        plans = compiler.compile_doc(j, fp, specs, st, random.Random(2))
+        plan_sec = next(x for x in plans if x["section"] == "诊疗计划")
+        self.assertIn("不写“诊断明确”", plan_sec.get("hint", ""))
+
+    def test_counterfactual_prefix_non_anticipation(self):
+        j, specs, st, _ = make("CF1", 3)
+        j["los"] = 5
+        while len(j["daily"]) < 6:
+            j["daily"].append(dict(j["daily"][-1], day=len(j["daily"]), T=36.6, P=78, R=18, SBP=122, DBP=76, symptoms=["咳嗽"]))
+        j["surgical"] = False
+        j["surgery_day"] = None
+        j["procedures"] = []
+        j["exams"] = [e for e in j["exams"] if e["result_day"] <= 1]
+        j["dx_events"] = [{"id": "d1", "name": j["patient"]["primary_dx"]["name"], "day": 0, "state": "疑似"},
+                          {"id": "d2", "name": j["patient"]["primary_dx"]["name"], "day": 2, "state": "确诊"}]
+        early_specs = [
+            {"k": 0, "day": 0, "role": "HR", "doc_type": "hospital_record", "doc_type_cn": "入院记录", "time": "09:00"},
+            {"k": 1, "day": 0, "role": "FP", "doc_type": "progress_note", "doc_type_cn": "首次病程记录", "time": "11:00"},
+            {"k": 2, "day": 1, "role": "SUP", "doc_type": "progress_note", "doc_type_cn": "主治医师查房记录", "time": "09:30"},
+            {"k": 3, "day": 2, "role": "DAILY", "doc_type": "progress_note", "doc_type_cn": "日常病程记录", "time": "10:00"},
+        ]
+        specs_a = early_specs + [{"k": 4, "day": 5, "role": "DS", "doc_type": "discharge_summary", "doc_type_cn": "出院记录", "time": "09:00"}]
+        j_cf = copy.deepcopy(j)
+        j_cf["surgical"] = True
+        j_cf["surgery_day"] = 4
+        j_cf["procedures"] = [{"id": "a1", "kind": "手术", "name": "腹腔镜胆囊切除术", "side": "无", "decide_day": 3, "do_day": 4, "anesthesia": "全身麻醉", "source": "key"}]
+        j_cf["exams"].append({"id": "e99", "key": "腹部超声", "region": "腹", "name": "腹部超声", "kind": "影像", "order_day": 3, "result_day": 4, "items": [], "abnormal": True, "finding": "符合胆囊结石表现"})
+        specs_b = early_specs + [
+            {"k": 4, "day": 3, "role": "PRE", "doc_type": "progress_note", "doc_type_cn": "术前小结", "time": "16:00"},
+            {"k": 5, "day": 4, "role": "POST", "doc_type": "progress_note", "doc_type_cn": "术后首次病程记录", "time": "15:00"},
+            {"k": 6, "day": 5, "role": "DS", "doc_type": "discharge_summary", "doc_type_cn": "出院记录", "time": "09:00"},
+        ]
+        for s_a, s_b in zip(early_specs, early_specs):
+            pa = compiler.compile_doc(j, s_a, specs_a, st, random.Random(99))
+            pb = compiler.compile_doc(j_cf, s_b, specs_b, st, random.Random(99))
+            self.assertEqual(pa, pb, s_a["role"])
+
+    def test_ds_course_calendar_dates_no_day0_and_order(self):
+        j, specs, st, _ = make("DSDT", 4)
+        ds = next(s for s in specs if s["role"] == "DS")
+        plans = compiler.compile_doc(j, ds, specs, st, random.Random(4))
+        course = next(x for x in plans if x["section"] == "诊疗经过")
+        texts = [f["text"] for f in course["facts"]]
+        self.assertFalse(any("第0天" in t for t in texts), texts)
+        self.assertTrue(any(j["admit_date"] + "查" in t for t in texts), texts)
+
+    def test_placeholder_mask_unmask_and_gate(self):
+        src = "白细胞8.61×10^9/L，中性粒细胞86.5%，2型糖尿病，血压148/81mmHg，2025-01-12行手术"
+        dmap, nmap = {}, {}
+        masked = writer.mask_text_with_map(src, dmap, nmap, allow_new=True)
+        self.assertEqual(masked, "白细胞<N1>×10^9/L，中性粒细胞<N2>%，2型糖尿病，血压<N3>/<N4>mmHg，<D1>行手术")
+        self.assertEqual(writer.unmask_text(masked, dmap, nmap), src)
+        self.assertEqual(writer.unmask_text("白细胞<N1>×10^9/L<N99>", dmap, nmap, strip_unknown=False), "白细胞8.61×10^9/L<N99>")
+        self.assertIn("prompt_leak", gate.check_section({"section": "正文", "target_chars": 5, "facts": [], "allowed": ["8.61"]}, "白细胞8.61×10^9/L<N99>"))
+        self.assertEqual(writer.unmask_text("白细胞<N1>×10^9/L<N99>", dmap, nmap, strip_unknown=True), "白细胞8.61×10^9/L")
+
+        j, specs, st, _ = make("PH1", 5)
+        hr = next(s for s in specs if s["role"] == "HR")
+        pl = next(x for x in compiler.compile_doc(j, hr, specs, st, random.Random(5)) if x["section"] == "体格检查")
+        mpl, dp, np_ = writer.mask_plan(pl)
+        prompt = writer.section_prompt(j, hr, mpl)
+        if np_ or dp:
+            self.assertIn("占位符", prompt)
+
+    def test_v0213_date_clean_future_gate_and_leak_tightening(self):
+        # 1. Extended _DATE_TOK (Chinese/dot/slash/month-day) & writer.clean period+semi cleanup
+        dmap, nmap = {}, {}
+        s_in = "2025年5月3日行手术，2025.05.04及5月6日复查，3个月前起病，2型糖尿病。"
+        masked = writer.mask_text_with_map(s_in, dmap, nmap, allow_new=True)
+        self.assertEqual(masked, "<D1>行手术，<D2>及<D3>复查，<N1>个月前起病，2型糖尿病。")
+        self.assertEqual(writer.unmask_text(masked, dmap, nmap), s_in)
+        self.assertEqual(writer.clean("出院医嘱：按时服药。；出院后不适随诊，。", "出院医嘱"), "按时服药。出院后不适随诊。")
+
+        # 2. future_date check & repair (including PRE surgical exemption & fallback to 近期)
+        pl = {"section": "正文", "role": "DAILY", "doc_date": "2025-05-02", "target_chars": 5, "facts": [], "allowed": []}
+        self.assertEqual(gate.check_section(pl, "患者今日病情平稳，拟5月5日复查血常规。"), [])
+        bad_txt = "患者今日病情平稳，2025-05-09复查白细胞正常。"
+        fails = gate.check_section(pl, bad_txt)
+        self.assertIn("future_date", fails)
+        self.assertEqual(gate.repair_section(bad_txt, fails, pl), "患者今日病情平稳。")
+        only_bad = "2025-05-09复查胸部CT。"
+        self.assertEqual(gate.repair_section(only_bad, ["future_date"], pl), "近期复查胸部CT。")
+        pre_pl = {"section": "手术指征", "role": "PRE", "doc_date": "2025-05-02", "target_chars": 5, "facts": [], "allowed": []}
+        self.assertEqual(gate.check_section(pre_pl, "定于2025年5月3日行手术。"), [])
+
+        # 3. Tightened O/B checks: "进一步" no longer exempts result_unsourced; earlier-clause "需" no longer exempts excl
+        rpl = {"section": "正文", "target_chars": 5, "facts": [], "allowed": [], "result_keys": ["血常规"]}
+        self.assertIn("result_unsourced", gate.check_section(rpl, "胸部CT示右下肺占位需进一步明确。"))
+        self.assertIn("result_unsourced", gate.check_section(rpl, "完善胸部CT示右下肺占位。"))
+        dx_pl = {"section": "鉴别诊断", "target_chars": 5, "facts": [], "allowed": [], "unsettled_dx": ["肺结核"]}
+        self.assertIn("dx_settled_early", gate.check_section(dx_pl, "患者咳嗽需治疗，目前已排除肺结核。"))
+
+        # 4. future_leak catches future imaging exam even without lab numerics
+        j, specs, st, _ = make("FLK", 7)
+        j["exams"] = [{"id": "e1", "key": "CT", "region": "胸", "name": "胸部CT", "kind": "影像", "order_day": 0, "result_day": 4, "items": []}]
+        docs = [{"k": 0, "role": "HR", "doc_type": "hospital_record", "day_offset": 0, "text": "入院记录\n体格检查：胸部CT示右肺大片影。"}]
+        self.assertIn(0, gate.future_leak(j, docs))
+
+        # 5. Pre-op FP before_op_done & future_leak procedure catch + valid plan preservation
+        fp_pl = {"section": "诊疗计划", "role": "FP", "before_op": True, "target_chars": 5, "facts": [], "allowed": []}
+        fp_bad = "拟明日行左腹股沟疝修补术，术后6小时去枕平卧，安返病房后监测体征。"
+        fp_fails = gate.check_section(fp_pl, fp_bad)
+        self.assertIn("before_op_done", fp_fails)
+        self.assertEqual(gate.repair_section(fp_bad, fp_fails, fp_pl), "拟明日行左腹股沟疝修补术。")
+        j["procedures"] = [{"id": "a1", "kind": "手术", "name": "左腹股沟疝修补术", "do_day": 1}]
+        fp_doc = [{"k": 1, "role": "FP", "doc_type": "progress_note", "day_offset": 0,
+                   "text": "首次病程记录\n2025-05-01 11:00\n诊疗计划：已完成腹股沟疝修补，术后6小时监测生命体征。"}]
+        self.assertIn(1, gate.future_leak(j, fp_doc))
+
+
+class TestV030(unittest.TestCase):
+    """v0.3.0：路线B融合、四类主诉状态机、精确术后天数与查体极性、禁顿号切句、LLM 上游延续与重试纠正。"""
+
+    def test_kb_v22_load_match_and_b_only_pipeline(self):
+        from medcourse import kb, plan_diag
+
+        kb_data = kb.load_default_kb()
+        self.assertIsNotNone(kb_data)
+        self.assertEqual(len(kb_data["entries"]), 17)
+        self.assertEqual(kb.match_kb(kb_data, "K80", "胆囊结石合并急性胆囊炎")["icd10"], "K80.0_acute")
+        self.assertEqual(kb.match_kb(kb_data, "Z51", "结肠癌术后化疗", tkind="化疗")["icd10"], "C18_chemo")
+        st = kb.build_b_only_stats(kb_data)
+        planner.require_stats(st)
+        rows = dict(plan_diag.diagnose(st, 60, 20261121))
+        self.assertEqual(rows.get("plan_check_failed", -1), 0)
+        self.assertEqual(rows.get("no_patient", 0), 0)
+        self.assertGreater(rows.get("kb_matched", 0), 20)
+        for k in ("results_never_must", "ds_admission_facts_leak", "past_denies_listed_dx", "comorb_wrong_sex_or_age", "before_op_done_fact", "interv_incision_fact"):
+            self.assertEqual(rows.get(k, 0), 0, (k, rows.get(k)))
+        w = writer.TemplateWriter()
+        kept = 0
+        for i in range(30):
+            _, docs, fails = pipeline.generate_one(f"KB0_{i:03d}", st, w, 20261121 + i, None, {})
+            if docs is not None and fails == []:
+                kept += 1
+        self.assertEqual(kept, 30)
+
+    def test_chief_4class_no_amenorrhea_gone_and_lesion_persistence(self):
+        st_preg = copy.deepcopy(fixtures_mc.stats())
+        st_preg["joint"]["items"] = {"女|18-40|O": 50}
+        st_preg["code3"]["O"] = {"n": 50, "items": {"O80": 50}}
+        st_preg["dx_names"]["O80"] = {"n": 50, "items": {"孕39周待产": 50}}
+        st_preg["chief_symptoms"]["O80"] = {"n": 50, "items": {"停经": 50}}
+        st_preg["durations"]["O80"] = {"n": 50, "items": {"1周": 50}}
+        st_preg["symptoms"]["O80"] = {"n": 50, "items": {"停经": 50, "腹痛": 20}}
+        j = planner.plan_journey(st_preg, random.Random(11), "OB_V03")
+        self.assertEqual(j["chief"]["category"], "obstetric")
+        self.assertTrue(all("停经" not in d["symptoms"] for d in j["daily"]))
+        specs = planner.schedule(j, st_preg, random.Random(11))
+        for s in specs:
+            if s["role"] in compiler.COURSE:
+                for pl in compiler.compile_doc(j, s, specs, st_preg, random.Random(11)):
+                    self.assertFalse(any("停经已消失" in f["text"] for f in pl["facts"]))
+
+        # 足月妊娠禁开米非司酮等流产药
+        st_m = copy.deepcopy(st_preg)
+        st_m["med_class"]["O80"] = {"n": 50, "items": {"子宫收缩药": 50}}
+        st_m["meds"]["O80"] = {"n": 50, "items": {"mifepristone": 50, "oxytocin": 50}}
+        st_m["med_alias"]["mifepristone"] = {"n": 50, "items": {"米非司酮": 50}}
+        st_m["med_dose"]["mifepristone"] = {"n": 50, "items": {"25mg": 50}}
+        st_m["med_freq"]["mifepristone"] = {"n": 50, "items": {"bid": 50}}
+        st_m["med_route"]["mifepristone"] = {"n": 50, "items": {"口服": 50}}
+        st_m["med_alias"]["oxytocin"] = {"n": 50, "items": {"缩宫素": 50}}
+        st_m["med_dose"]["oxytocin"] = {"n": 50, "items": {"10U": 50}}
+        st_m["med_freq"]["oxytocin"] = {"n": 50, "items": {"qd": 50}}
+        st_m["med_route"]["oxytocin"] = {"n": 50, "items": {"静滴": 50}}
+        j_m = planner.plan_journey(st_m, random.Random(3), "OB_MED")
+        self.assertTrue(all(m["drug_id"] != "mifepristone" for m in j_m["meds"]))
+
+        # scheduled 化疗住院 HR 现病史明确标明本次化疗尚未实施
+        st_c = copy.deepcopy(fixtures_mc.stats())
+        slot_c = {"slot_id": "Z51", "sex": "女", "age": 55, "dept": "肿瘤内科", "dx_name": "结肠癌术后辅助化疗", "dx_code3": "Z51", "los": 4, "surgical": False}
+        jc, sc, stc, rc = make("Z51C", 5, slot_c, st_c)
+        self.assertEqual(jc["chief"]["category"], "scheduled")
+        hpi_c = next(x for x in compiler.compile_doc(jc, sc[0], sc, stc, rc) if x["section"] == "现病史")
+        self.assertIn("尚未实施", hpi_c["facts"][0]["text"])
+
+    def test_postop_day_exact_and_preop_wound_drain_gate(self):
+        st = fixtures_mc.stats()
+        slot_s = {"slot_id": "SG3", "sex": "男", "age": 48, "dept": "肝胆外科", "dx_name": "胆囊结石伴急性胆囊炎", "dx_code3": "K80", "los": 6, "surgical": True, "surgery_day": 1, "procedure": "腹腔镜胆囊切除术"}
+        js, specs, sts, rngs = make("SG3", 7, slot_s, st)
+        d4 = next((s for s in specs if s["role"] in compiler.COURSE and s["day"] == 4), None)
+        if d4 is None:
+            d4 = {"k": 4, "doc_type": "progress_note", "doc_type_cn": "日常病程记录", "role": "DAILY", "day": 4, "time": "09:00"}
+            specs = [s for s in specs if s["day"] < 4] + [d4] + [s for s in specs if s["day"] >= 4]
+        pl = compiler.compile_doc(js, d4, specs, sts, rngs)[0]
+        self.assertEqual(pl["postop_day"], 3)
+        self.assertIn("术后第3天", "".join(f["text"] for f in pl["facts"]))
+        self.assertEqual(gate.check_section({"section": "正文", "role": "DAILY", "postop_day": 3, "target_chars": 5, "facts": []}, "术后第3天，患者切口愈合可。"), [])
+        self.assertEqual(gate.check_section({"section": "正文", "role": "DAILY", "postop_day": 3, "target_chars": 5, "facts": []}, "术后第三天，患者切口愈合可。"), [])
+        self.assertIn("postop_day_mismatch", gate.check_section({"section": "正文", "role": "DAILY", "postop_day": 3, "target_chars": 5, "facts": []}, "术后第一天，患者一般情况可。"))
+        self.assertIn("postop_day_mismatch", gate.check_section({"section": "手术简要经过", "role": "POST", "postop_day": 0, "target_chars": 5, "facts": []}, "手术顺利，术后第1天安返病房。"))
+
+        # 术前伤口敷料/引流管隐性未来泄露（节级门禁 + future_leak）
+        pre_pl = {"section": "正文", "role": "SUP", "before_op": True, "target_chars": 5, "facts": [], "allowed": []}
+        self.assertIn("before_op_done", gate.check_section(pre_pl, "拟明日行腹腔镜阑尾切除术，目前伤口敷料干洁，腹腔引流管引流通畅。"))
+        js["procedures"] = [{"id": "a1", "kind": "手术", "name": "腹腔镜阑尾切除术", "do_day": 2}]
+        pre_doc = [{"k": 2, "role": "SUP", "doc_type": "progress_note", "day_offset": 1, "text": "2025-05-02 09:00\n今日拟行手术。切口敷料干洁，腹腔引流管引流通畅。"}]
+        self.assertIn(2, gate.future_leak(js, pre_doc))
+
+        # 异常化验写“未见明显异常”拦截
+        self.assertIn("lab_abn_called_normal", gate.check_section({"section": "现病史", "has_abn_labs": True, "target_chars": 5, "facts": []}, "入院前查血常规未见明显异常。"))
+
+    def test_clause_split_preserves_dunhao_negation_and_ped_filter(self):
+        pl = {"section": "既往史", "known_past": ["高血压"], "child_past": False, "target_chars": 5, "facts": []}
+        txt = "既往有高血压病史，否认高血压、冠心病、糖尿病病史。"
+        fixed = gate.repair_section(txt, ["past_contradict"], pl)
+        self.assertNotIn("冠心病", fixed)
+        self.assertNotIn("糖尿病", fixed)
+        self.assertFalse(planner.dx_ok("黏膜皮肤淋巴结综合征", "男", 82))
+        self.assertFalse(planner.dx_ok("手足口病", "女", 75))
+
+    def test_llm_writer_carry_over_no_tail_splice_and_retry_guidance(self):
+        seen_prompts = []
+        seen_facts = []
+
+        class FakeLLM(writer.LLMWriter):
+            def __init__(self):
+                self.raw = False
+                self.num_placeholder = False
+                self.splice_copy = False
+                self.calls = self.prompt_tokens = self.completion_tokens = 0
+                self.seconds = 0.0
+                self.no_filler = False
+                self.no_filler2 = True
+                self.prev_note = False
+
+            def write(self, j, spec, plan, attempt):
+                self.calls += 1
+                seen_facts.append((spec["role"], [f["kind"] for f in plan["facts"]]))
+                p_txt = writer.section_prompt(j, spec, plan)
+                seen_prompts.append((spec["role"], attempt, p_txt))
+                if spec["role"] == "DAILY" and attempt == 0:
+                    return "太短"
+                return "。".join(f["text"].rstrip("。") for f in plan["facts"]) + "。SENT_END。"
+
+        st = fixtures_mc.stats()
+        j, docs, fails = pipeline.generate_one("LLM_V03", st, FakeLLM(), 20261121, None, {})
+        self.assertEqual(fails, [])
+        self.assertIsNotNone(docs)
+        # 无 post-hoc 尾句拼接：DAILY 正文仅包含 FakeLLM 自身返回结尾
+        for d in docs:
+            if d["role"] == "DAILY":
+                self.assertTrue(d["text"].rstrip().endswith("SENT_END。"), d["text"])
+        # DAILY 首次 too_short 后，第二次写入收到了 retry guidance
+        daily_prompts = [(a, p) for r, a, p in seen_prompts if r == "DAILY"]
+        self.assertTrue(any("上一次生成校验未通过" in p and "长度" in p for a, p in daily_prompts if a >= 1), daily_prompts)
+
+
+class TestV031(unittest.TestCase):
+    """0.3.1：产科破水孕周与急症病程、儿科肾贫血化验与单次极量、术前屏蔽术后病理、术后日期去歧义、面板化验矛盾与新闸门。全部虚构数据。"""
+
+    def test_obstetric_prom_weeks_acute_dur_and_no_unperformed_delivery_comorb(self):
+        self.assertEqual(icd.week_range("胎膜早破"), (37, 41))
+        self.assertEqual(icd.week_range("前置胎盘"), (28, 39))
+        self.assertEqual(icd.week_range("先兆流产"), (6, 13))
+        st = copy.deepcopy(fixtures_mc.stats())
+        st["chief_symptoms"]["O42"] = {"n": 50, "items": {"停经": 50, "阴道流液": 50}}
+        st["symptoms"]["O42"] = {"n": 50, "items": {"停经": 50, "阴道流液": 50}}
+        st["durations"]["O"] = {"n": 100, "items": {"38周": 100}}
+        st["comorbid"]["O42"] = {"n": 100, "items": {"单胎活产": 90, "头位顺产": 90, "剖宫产术后": 60, "轻度贫血": 50}}
+        st["real_rates"] = {"ds_dx_admissions": 100, "ds_dx_items": 300, "b3_admissions": 100, "b3_permille_sum": 40000}
+        slot = {"slot_id": "O42", "sex": "女", "age": 29, "dept": "产科", "dx_name": "胎膜早破", "dx_code3": "O42", "los": 4, "surgical": False}
+        saw_combo = False
+        for s in range(25):
+            j = planner.plan_journey(st, random.Random(s), f"PROM{s}", slot)
+            self.assertGreaterEqual(j["patient"]["gest_weeks"], 37)
+            ct = planner.chief_text(j)
+            if "阴道流液" in ct:
+                saw_combo = True
+                self.assertRegex(ct, r"^(?:停经\d+周，)?阴道流液\d+(?:小时|天)$")
+                self.assertNotIn("阴道流液38周", ct)
+            names = [c["name"] for c in j["patient"]["comorbidities"]]
+            self.assertNotIn("单胎活产", names)
+            self.assertNotIn("头位顺产", names)
+            for c in j["patient"]["comorbidities"]:
+                if "术后" in c["name"]:
+                    self.assertFalse(c["at_admission"])
+        self.assertTrue(saw_combo)
+
+    def test_pediatric_ckd_anemia_labs_and_child_dose_ceiling(self):
+        self.assertFalse(planner._child_dose_ok({"age": 2, "weight_kg": 12.0}, "pip_tazo", "哌拉西林他唑巴坦", "4.5g"))
+        self.assertFalse(planner._child_dose_ok({"age": 2, "weight_kg": 12.0}, "vancomycin", "万古霉素", "1000mg"))
+        self.assertTrue(planner._child_dose_ok({"age": 2, "weight_kg": 12.0}, "pip_tazo", "哌拉西林他唑巴坦", "1.2g"))
+        st = copy.deepcopy(fixtures_mc.stats())
+        st["lab_state"]["kid:*"] = {"n": 100, "items": {"CREA|norm": 95, "CREA|abn": 5, "BUN|norm": 95, "BUN|abn": 5, "HGB|norm": 95, "HGB|abn": 5}}
+        st["med_class"]["N18"] = {"n": 50, "items": {"抗菌药": 50}}
+        st["meds"]["N18"] = {"n": 50, "items": {"pip_tazo": 30, "vancomycin": 25}}
+        st["meds"]["kid:*"] = {"n": 50, "items": {"pip_tazo": 30, "vancomycin": 25}}
+        st["med_alias"].update({"pip_tazo": {"n": 50, "items": {"哌拉西林他唑巴坦": 50}}, "vancomycin": {"n": 50, "items": {"万古霉素": 50}}})
+        st["med_dose"].update({"pip_tazo": {"n": 50, "items": {"4.5g": 50}}, "vancomycin": {"n": 50, "items": {"1000mg": 50}}})
+        st["med_freq"].update({"pip_tazo": {"n": 50, "items": {"q8h": 50}}, "vancomycin": {"n": 50, "items": {"q12h": 50}}})
+        st["med_route"].update({"pip_tazo": {"n": 50, "items": {"静滴": 50}}, "vancomycin": {"n": 50, "items": {"静滴": 50}}})
+        slot = {"slot_id": "CKD2", "sex": "男", "age": 2, "dept": "儿科", "dx_name": "慢性肾脏病5期", "dx_code3": "N18", "los": 5, "surgical": False}
+        j = planner.plan_journey(st, random.Random(11), "CKD2", slot)
+        j["patient"]["comorbidities"].append({"name": "肾性贫血", "at_admission": True})
+        lctx = planner.lab_ctx(random.Random(11), st, planner.strata_of("慢性肾脏病5期", "N18"), j["patient"])
+        crea = planner.draw_lab(random.Random(12), "CREA", lctx)
+        bun = planner.draw_lab(random.Random(13), "BUN", lctx)
+        hgb = planner.draw_lab(random.Random(14), "HGB", lctx)
+        self.assertEqual(crea["flag"], "偏高")
+        self.assertGreaterEqual(float(crea["value"]), 180.0)
+        self.assertEqual(bun["flag"], "偏高")
+        self.assertEqual(hgb["flag"], "偏低")
+        for m in j["meds"]:
+            self.assertNotIn(m["dose"], ("4.5g", "1000mg"))
+        self.assertTrue(any(m["drug_id"] in ("pip_tazo", "vancomycin") for m in j["meds"]))
+
+    def test_preop_excludes_postop_pathology_and_postop_date_unambiguous(self):
+        st = fixtures_mc.stats()
+        slot = {"slot_id": "OP0", "sex": "男", "age": 48, "dept": "普外科", "dx_name": "胆囊结石伴急性胆囊炎", "dx_code3": "K80",
+                "los": 5, "surgical": True, "surgery_day": 0, "procedure": "腹腔镜胆囊切除术"}
+        j, specs, _, rng = make("OP0", 9, slot, st)
+        j["exams"] = [e for e in j["exams"] if e["name"] != "术后病理"] + [
+            {"id": "epath", "key": "病理", "region": None, "name": "术后病理", "kind": "病理", "order_day": 0, "result_day": 3, "items": []}
+        ]
+        fp = next(s for s in specs if s["role"] == "FP")
+        fp_plans = compiler.compile_doc(j, fp, specs, st, rng)
+        fp_text = "".join(f["text"] for pl in fp_plans for f in pl["facts"])
+        self.assertNotIn("术后病理", fp_text)
+
+        d2 = next((s for s in specs if s["role"] in compiler.COURSE and s["day"] == 2), None)
+        if d2 is None:
+            d2 = {"k": max(s["k"] for s in specs) + 1, "doc_type": "progress_note", "doc_type_cn": "日常病程记录", "role": "DAILY", "day": 2, "time": "09:00"}
+            specs = [s for s in specs if s["day"] < 2] + [d2] + [s for s in specs if s["day"] >= 2]
+        pl2 = compiler.compile_doc(j, d2, specs, st, rng)[0]
+        proc_f = [f["text"] for f in pl2["facts"] if f["kind"] == "procedure"][0]
+        self.assertIn("今日为术后第2天", proc_f)
+        self.assertIn(compiler.doc_date(j, 0), proc_f)
+        self.assertIsNone(compiler.pick_carry_fact("建议进一步完善胸部CT检查。", j, d2, 1, st, rng))
+
+        post_s = next(s for s in specs if s["role"] == "POST")
+        post_pls = compiler.compile_doc(j, post_s, specs, st, rng)
+        for pl in post_pls:
+            if pl["mode"] == "llm":
+                self.assertIn("术后第1天", pl.get("hint") or "")
+
+    def test_panel_scoped_lab_abn_called_normal(self):
+        st = fixtures_mc.stats()
+        j, specs, _, rng = make("LABP", 4, None, st)
+        j["exams"] = [
+            {"id": "e1", "key": "血常规", "region": None, "name": "血常规", "kind": "检验", "order_day": 0, "result_day": 0,
+             "items": [{"item": "白细胞", "key": "WBC", "value": "6.5", "unit": "×10^9/L", "flag": "正常"}]},
+            {"id": "e2", "key": "肝功能", "region": None, "name": "肝功能", "kind": "检验", "order_day": 0, "result_day": 0,
+             "items": [{"item": "谷丙转氨酶", "key": "ALT", "value": "120", "unit": "U/L", "flag": "偏高"}]},
+        ]
+        hr_pl = next(x for x in compiler.compile_doc(j, specs[0], specs, st, rng) if x["section"] == "现病史")
+        self.assertEqual(hr_pl["abn_lab_keys"], ["肝功能"])
+        self.assertEqual(gate.check_section({"section": "现病史", "abn_lab_keys": ["肝功能"], "has_abn_labs": True, "target_chars": 5, "facts": []},
+                                            "血常规未见异常，肝功能示谷丙转氨酶偏高。"), [])
+        self.assertEqual(gate.check_section({"section": "现病史", "abn_lab_keys": ["肝功能"], "has_abn_labs": True, "target_chars": 5, "facts": [], "allowed": ["120"]},
+                                            "肝功能示谷丙转氨酶120U/L，血常规未见异常。"), [])
+        self.assertIn("lab_abn_called_normal", gate.check_section({"section": "现病史", "abn_lab_keys": ["肝功能"], "has_abn_labs": True, "target_chars": 5, "facts": []},
+                                                                   "肝功能未见明显异常。"))
+        self.assertIn("lab_abn_called_normal", gate.check_section({"section": "现病史", "abn_lab_keys": ["肝功能"], "has_abn_labs": True, "target_chars": 5, "facts": []},
+                                                                   "上述指标在正常范围内。"))
+        self.assertIn("lab_abn_called_normal", gate.check_section({"section": "现病史", "abn_lab_keys": ["心肌酶"], "has_abn_labs": True, "target_chars": 5, "facts": [], "allowed": ["0.923"]},
+                                                                   "肌钙蛋白I 0.923ng/mL，未见明显升高。"))
+
+    def test_v031_gates_wound_senior_pe_vitals_loop_and_adm_postop_day(self):
+        self.assertIn("nonsurg_postop", gate.check_section({"target_chars": 5, "facts": [], "nonsurgical": True}, "出院后注意保持伤口清洁干燥。"))
+        self.assertEqual(gate.check_section({"target_chars": 5, "facts": [], "nonsurgical": True}, "门诊随诊，适度休息。"), [])
+        self.assertIn("senior_in_daily", gate.check_section({"section": "正文", "role": "DAILY", "target_chars": 5, "facts": []}, "今日主任医师查房：患者平稳。"))
+        self.assertEqual(gate.check_section({"section": "正文", "role": "SUP", "target_chars": 5, "facts": []}, "今日主任医师查房：患者平稳。"), [])
+        self.assertIn("pe_dup_vitals", gate.check_section({"section": "体格检查", "program_prefix": "体温36.5℃...", "target_chars": 5, "facts": []},
+                                                           "体温、脉搏、呼吸、血压已记录。双肺呼吸音清。"))
+        self.assertIn("pe_dup_vitals", gate.check_section({"section": "体格检查", "program_prefix": "体温36.5℃...", "target_chars": 5, "facts": []},
+                                                           "T 36.7℃，P 78次/分，双肺清。"))
+        self.assertIn("prompt_leak", gate.check_section({"target_chars": 5, "facts": []}, "延续情况：患者无发热。"))
+
+        pfx_loop = "".join(f"患者无特殊症状第{i}项表现。" for i in range(10))
+        self.assertIn("repeat", gate.check_section({"target_chars": 10, "facts": []}, pfx_loop))
+        trimmed = gate.repair_section(pfx_loop, ["repeat"])
+        self.assertNotIn("repeat", gate.check_section({"target_chars": 10, "facts": []}, trimmed))
+
+        st = fixtures_mc.stats()
+        slot = {"slot_id": "SG_ADM", "sex": "女", "age": 52, "dept": "普外科", "dx_name": "胆囊结石伴急性胆囊炎", "dx_code3": "K80",
+                "los": 5, "surgical": True, "surgery_day": 1, "procedure": "腹腔镜胆囊切除术"}
+        j, specs, _, rng = make("SG_ADM", 1, slot, st)
+        w, docs = writer.TemplateWriter(), []
+        for s in specs:
+            txt, _ = pipeline.write_doc(j, s, specs, st, w, rng, {}, None)
+            docs.append({"doc_type": s["doc_type"], "day_offset": s["day"], "text": txt, "doc_type_cn": s["doc_type_cn"], "k": s["k"], "role": s["role"]})
+        self.assertEqual(gate.check_admission(j, docs), [])
+        bad_post = copy.deepcopy(docs)
+        pk = next(d["k"] for d in bad_post if d["role"] == "POST")
+        bad_post[pk]["text"] = bad_post[pk]["text"].replace("手术顺利", "术后第1天手术顺利")
+        self.assertIn((pk, "postop_day_mismatch"), gate.check_admission(j, bad_post))
+
+
+class TestV032(unittest.TestCase):
+    def test_v032_diag_imaging_coupling_and_preop_clamp(self):
+        st_b = kb.build_b_only_stats()
+        cases = [
+            {"slot_id": "D_K35", "sex": "男", "age": 26, "dept": "普外科", "dx_name": "急性化脓性阑尾炎", "dx_code3": "K35",
+             "los": 6, "surgical": True, "surgery_day": 1, "procedure": "腹腔镜阑尾切除术"},
+            {"slot_id": "D_I21", "sex": "男", "age": 62, "dept": "心内科", "dx_name": "急性心肌梗死", "dx_code3": "I21",
+             "los": 9, "surgical": True, "surgery_day": 1, "procedure": "经皮冠状动脉介入术"},
+            {"slot_id": "D_N20", "sex": "男", "age": 42, "dept": "泌尿外科", "dx_name": "右侧输尿管结石", "dx_code3": "N20",
+             "los": 5, "surgical": True, "surgery_day": 1, "procedure": "经尿道右侧输尿管软镜钬激光碎石取石术"},
+            {"slot_id": "D_J15", "sex": "女", "age": 54, "dept": "呼吸内科", "dx_name": "社区获得性肺炎", "dx_code3": "J15",
+             "los": 7, "surgical": False},
+        ]
+        for idx, slot in enumerate(cases):
+            j, _, _, _ = make(f"V32_{idx}", 10 + idx, slot, st_b)
+            diag_imgs = [e for e in j["exams"] if e.get("diagnostic") and e.get("kind") in ("影像", "造影", "内镜")]
+            self.assertTrue(diag_imgs, f"{slot['slot_id']} missing diagnostic imaging: {j['exams']}")
+            self.assertTrue(all(e.get("abnormal") and e.get("finding") for e in diag_imgs))
+            if slot["surgical"]:
+                do_d = j["procedures"][0]["do_day"]
+                for e in diag_imgs:
+                    if e["kind"] == "影像" and not e.get("with_proc"):
+                        self.assertLessEqual(e["result_day"], do_d)
+
+        exams = [
+            {"id": "e1", "key": "超声", "region": "腹", "name": "腹部超声", "kind": "影像", "order_day": 0, "result_day": 0, "items": [], "abnormal": False},
+            {"id": "e2", "key": "心脏超声", "region": None, "name": "心脏超声", "kind": "影像", "order_day": 0, "result_day": 0, "items": [], "abnormal": False},
+        ]
+        planner.mark_exam_findings({}, ["*"], exams, "急性阑尾炎", {"腹"})
+        self.assertTrue(exams[0]["diagnostic"] and exams[0]["abnormal"])
+        self.assertIn("急性阑尾炎", exams[0]["finding"])
+        self.assertFalse(exams[1]["diagnostic"] or exams[1]["abnormal"])
+
+    def test_v032_same_day_preop_and_no_incision_adm(self):
+        st = fixtures_mc.stats()
+        slot_sg = {"slot_id": "SG32", "sex": "女", "age": 52, "dept": "普外科", "dx_name": "胆囊结石伴急性胆囊炎", "dx_code3": "K80",
+                   "los": 5, "surgical": True, "surgery_day": 1, "procedure": "腹腔镜胆囊切除术"}
+        j, specs, _, rng = make("SG32", 1, slot_sg, st)
+        w, docs = writer.TemplateWriter(), []
+        for s in specs:
+            txt, _ = pipeline.write_doc(j, s, specs, st, w, rng, {}, None)
+            docs.append({"doc_type": s["doc_type"], "day_offset": s["day"], "text": txt, "doc_type_cn": s["doc_type_cn"], "k": s["k"], "role": s["role"]})
+        self.assertEqual(gate.check_admission(j, docs), [])
+
+        bad_same = copy.deepcopy(docs)
+        pre_idx = next(i for i, d in enumerate(bad_same) if d["role"] == "PRE")
+        bad_same[pre_idx]["day_offset"] = j["procedures"][0]["do_day"]
+        bad_same[pre_idx]["text"] += "\n术后第2天患者可进流食，胆囊切除已完成。"
+        self.assertIn(bad_same[pre_idx]["k"], gate.future_leak(j, bad_same))
+        self.assertIn((bad_same[pre_idx]["k"], "postop_day_mismatch"), gate.check_admission(j, bad_same))
+
+        self.assertIn("no_incision_leak", writer.RETRY_GUIDANCE)
+        st_b = kb.build_b_only_stats()
+        slot_ni = {"slot_id": "NI32", "sex": "男", "age": 42, "dept": "泌尿外科", "dx_name": "右侧输尿管结石", "dx_code3": "N20",
+                   "los": 5, "surgical": True, "surgery_day": 1, "procedure": "经尿道右侧输尿管软镜钬激光碎石取石术"}
+        j2, specs2, _, rng2 = make("NI32", 2, slot_ni, st_b)
+        self.assertTrue(compiler.no_incision(j2["procedures"][0]))
+        post_spec2 = next(s for s in specs2 if s["role"] == "POST")
+        post_pls2 = compiler.compile_doc(j2, post_spec2, specs2, st_b, rng2)
+        for pl in post_pls2:
+            if pl["mode"] == "llm":
+                self.assertTrue(pl.get("no_incision"))
+                self.assertIn("无切口", pl.get("hint") or "")
+        docs2 = []
+        for s in specs2:
+            txt, _ = pipeline.write_doc(j2, s, specs2, st_b, w, rng2, {}, None)
+            docs2.append({"doc_type": s["doc_type"], "day_offset": s["day"], "text": txt, "doc_type_cn": s["doc_type_cn"], "k": s["k"], "role": s["role"]})
+        bad_ni = copy.deepcopy(docs2)
+        pk2 = next(d["k"] for d in bad_ni if d["role"] == "POST")
+        bad_ni[pk2]["text"] += " 切口敷料干洁，无渗血。"
+        self.assertIn((pk2, "no_incision_leak"), gate.check_admission(j2, bad_ni))
+
+    def test_v032_pe_dup_vitals_ds_admit_date_and_sym_age(self):
+        self.assertIn("pe_dup_vitals", gate.check_section(
+            {"section": "体格检查", "program_prefix": "体温36.5℃...", "target_chars": 5, "facts": []},
+            "体温、脉搏、呼吸、血压已另录。双肺呼吸音清。"))
+        self.assertIn("pe_dup_vitals", gate.check_section(
+            {"section": "体格检查", "program_prefix": "体温36.5℃...", "target_chars": 5, "facts": []},
+            "体温、呼吸、血压见前录，腹部平坦。"))
+        self.assertIn("pe_dup_vitals", gate.check_section(
+            {"section": "体格检查", "program_prefix": "体温36.5℃...", "target_chars": 5, "facts": []},
+            "脉搏、血压如前所述，腹部平坦。"))
+
+        st = fixtures_mc.stats()
+        j, specs, _, rng = make("DS32", 3, None, st)
+        ds_spec = next(s for s in specs if s["role"] == "DS")
+        ds_pls = compiler.compile_doc(j, ds_spec, specs, st, rng)
+        course_pl = next(x for x in ds_pls if x["section"] == "诊疗经过")
+        self.assertTrue(any(f"患者于{j['admit_date']}入院后完善相关检查" in str(f) for f in course_pl.get("facts", [])))
+
+        self.assertFalse(planner.sym_ok("胸骨后压榨性疼痛", {"age": 4, "sex": "男"}))
+        self.assertFalse(planner.sym_ok("绝经后阴道流血", {"age": 5, "sex": "女"}))
+        self.assertFalse(planner.sym_ok("前列腺增生伴排尿困难", {"age": 6, "sex": "男"}))
+        self.assertTrue(planner.sym_ok("胸骨后压榨性疼痛", {"age": 45, "sex": "男"}))
+
+    def test_v032_repair_drop_clauses_and_kb_b_only_lifts(self):
+        repaired = gate.repair_section("患者发热，切口敷料干洁，生命体征平稳。", ["no_incision_leak"])
+        self.assertIn("患者发热", repaired)
+        self.assertIn("生命体征平稳", repaired)
+        self.assertNotIn("切口", repaired)
+
+        st_b = kb.build_b_only_stats()
+        global_items = st_b["exams"]["*"]["items"]
+        self.assertIn("CT|胸", global_items)
+        self.assertIn("超声|腹", global_items)
+        lifts = planner.exam_lifts(st_b, ["J15", "J", "*"], {"肺"})
+        self.assertGreater(lifts.get("CT|胸", 0.0), 1.0)
 
 
 if __name__ == "__main__":

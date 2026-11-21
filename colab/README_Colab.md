@@ -25,9 +25,10 @@
 
 | 函数 | 用途 |
 |---|---|
-| `inspect_gpu()` | 检测挂载显卡型号与显存余量，核对是否符合 A100/L4 要求 |
+| `inspect_gpu()` | 检测挂载显卡型号与显存余量，核对是否符合 A100/L4 要求（兼容 `Qwen3-32B-AWQ` 与 `Qwen3-8B`） |
 | `setup_env()` | 自动配置 `BENCH_G1~G6`、`MC_CORE` 与 `PYTHONPATH` |
-| `start_vllm(model="Qwen/Qwen3-8B", port=8101, ...)` | 在 `127.0.0.1` 后台拉起兼容 `medcourse.llm.Client` 的 vLLM 服务并等待就绪 |
-| `run_route_b(out_dir, only="", concurrency=6)` | 运行路线 B 公开临床路径知识抽取 |
+| `start_vllm(model="Qwen/Qwen3-32B-AWQ", port=8101, ...)` | 在 `127.0.0.1` 后台拉起兼容 `medcourse.llm.Client` 的 vLLM 服务（自动适配 AWQ `dtype="auto"`） |
+| `run_route_b(out_dir, only="", concurrency=6)` | 运行路线 B 公开临床路径知识抽取（推荐配合 `Qwen/Qwen3-8B`） |
+| `run_kb_only_demo(out_dir, n=4, use_llm=False)` | 基于 `kb_v22.json` 跑通 `--kb-only` 纯公开路线 B 国标 7 类文书合成演示（推荐配合 `Qwen/Qwen3-32B-AWQ`） |
 | `run_synthetic_fixture_demo(out_dir, n=4, use_llm=False)` | 基于纯虚构统计夹具跑通 `medcourse_core` 7 类连续文书合成流水线 |
 | `stop_vllm(handle)` | 停止后台 vLLM 进程并释放显存 |

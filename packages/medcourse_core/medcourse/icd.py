@@ -121,13 +121,15 @@ def realize_side(text, rng):
 
 
 def week_range(name):
-    """按诊断名定孕周范围（公开产科常识）：流产、胚胎停育、早孕 6–13 周，早产 28–36 周，待产、临产、足月、分娩 37–41 周，其余 None。"""
-    if re.search(r"流产|胚胎|葡萄胎|早孕|宫外孕|异位妊娠", name or ""):
+    """按诊断名定孕周范围（公开产科常识）：早孕/流产 6–13 周，早产 28–36 周，晚孕并发症 28–39 周，足月/临产/破水 37–41 周，其余 None。"""
+    if re.search(r"流产|胚胎|葡萄胎|早孕|宫外孕|异位妊娠|剧吐", name or ""):
         return 6, 13
     if "早产" in (name or ""):
         return 28, 36
-    if re.search(r"待产|临产|足月|分娩", name or ""):
+    if re.search(r"待产|临产|足月|分娩|胎膜早破|头盆不称|胎儿窘迫|过期妊娠|脐带|羊水过少|羊水过多|胎位|臀位|横位|巨大儿", name or ""):
         return 37, 41
+    if re.search(r"前置胎盘|胎盘早剥|子痫|妊娠期高血压|妊娠期糖尿病|胆汁淤积|瘢痕子宫", name or ""):
+        return 28, 39
     return None
 
 

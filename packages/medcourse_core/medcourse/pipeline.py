@@ -26,14 +26,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import compiler, gate, planner, writer
+from . import compiler, gate, kb, planner, writer
 from .contract import admission_line
 from .llm import LLMError
 from .safe import SafeError, guarded, log
 
 MAX_SECTION_TRIES = 3
 MAX_DOC_REWRITES = 2
-VERSION = "s1-pipeline-0.21.0"  # 0.2.1：B_B3/B_copy5/血常规极值校准 + 写手端 5 项 qa_* 闸门收口（未动 stats.py，沿用 stats_v020.json）
+VERSION = "s1-pipeline-0.3.2"  # 0.32：核心定性影像阳性支撑与术前回报时序、同日术前(k<post_k)/无切口终检阻断、正交正则与修补函数大瘦身
 PE_EXCERPT, SPEC_EXCERPT = 300, 60   # 0.1.11：出院记录"入院情况"的摘录 120 → 300 字（第十次合成病历 M6，阳性体征在 120 字以后）
 PE_REF = 400                         # 0.1.11：专科情况提示里给的体格检查全文上限
 _SENT_END = "。！？!?"
@@ -94,31 +94,48 @@ def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=Non
         for f in pl.get("focus") or ():
             tally["focus_" + f] = tally.get("focus_" + f, 0) + 1
         tally["sections"] = tally.get("sections", 0) + 1
-        best, best_f = None, None
-        for attempt in range(MAX_SECTION_TRIES):
+        splice = getattr(w, "splice_copy", True)
+        if not splice and "copy" in pl and prev_note:
+            carry = compiler.pick_carry_fact(
+                prev_note["text"], j, spec, prev_note["day"], stats, rng,
+                banned=compiler.copy_banned(j, spec["day"]) + list(prev_note.get("overused") or ()),
+                safe_fn=lambda s, _p=pl: gate.copy_safe(_p, s),
+            )
+            if carry:
+                pl["facts"] = list(pl["facts"]) + [compiler._fact("carry", carry)]
+        tries = 4 if not splice else MAX_SECTION_TRIES
+        best, best_f, last_fails = None, None, None
+        for attempt in range(tries):
+            if not splice and attempt and last_fails:
+                pl["retry_fails"] = last_fails
+            else:
+                pl.pop("retry_fails", None)
             text = w.write(j, spec, pl, attempt + 10 * round_)
             fails = gate.check_section(pl, text)
+            last_fails = fails
             if attempt:
                 tally["section_retries"] = tally.get("section_retries", 0) + 1
             if best is None or len(fails) < len(best_f):
                 best, best_f = text, fails
             if not fails:
                 break
+        pl.pop("retry_fails", None)
         for code in best_f:
             tally["sec_" + code] = tally.get("sec_" + code, 0) + 1
         if "admission_leak" in best_f:
             # 0.1.5："入院情况"三次都带住院后的事，剔掉带触发词的分句再交出（0.1.4 带着交出，W-8B 的 D_K4 6/20 都是这样来的）
             best = gate.strip_admission_leak(best)
             tally["sec_admission_leak_stripped"] = tally.get("sec_admission_leak_stripped", 0) + 1
-        fixable = [c for c in best_f if c in gate.FIXABLE]
+        fix_pool = gate.FIXABLE if splice else gate.PIPELINE_SAFE_FIX
+        fixable = [c for c in best_f if c in fix_pool]
         if fixable:
-            # 0.1.8：复读、截断、非手术写术后，三次都没写好时修补再交出（只删不添）；0.1.9 加体格检查写病史、提示句外漏
+            # 0.1.8 / 0.30：TemplateWriter 对照保持 FIXABLE，LLMWriter 仅保留纯格式安全修补（truncated/repeat 等）
             best = gate.repair_section(best, fixable, pl)
             for code in fixable:
                 tally[f"sec_{code}_repaired"] = tally.get(f"sec_{code}_repaired", 0) + 1
         if not best_f:
             tally["sections_first_try"] = tally.get("sections_first_try", 0) + (attempt == 0)
-        if "copy" in pl and prev_note:
+        if splice and "copy" in pl and prev_note:
             gap_day = prev_note["day"]
             budget = compiler.copy_budget(stats, spec, gap_day, prev_role=prev_note.get("role"))
             pl["copy"]["budget"] = round(budget, 4)
@@ -128,6 +145,7 @@ def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=Non
                 banned_meds=compiler.inactive_meds(j, spec["day"]),
                 allowed_nums=compiler.active_med_nums(j, spec["day"]),
                 safe_fn=lambda s, _p=pl: gate.copy_safe(_p, s),
+                max_sents=compiler.copy_max_sents(spec, prev_note.get("role")),
             )
             tally["copied_chars"] = tally.get("copied_chars", 0) + added
             tally["note_chars"] = tally.get("note_chars", 0) + len(best)
@@ -136,15 +154,15 @@ def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=Non
 
 
 def _note_copy_source(role, texts):
-    """提取每类可作下一篇拷贝源的文书正文（FP 病例特点 / SUP·DAILY 正文 / PRE 简要病情 / POST 术后）。"""
+    """提取每类可作下一篇拷贝源的文书正文（FP 病例特点+拟诊+计划 / SUP·DAILY 正文 / PRE 简要病情 / POST 术后处理措施）。"""
     if role == "FP":
-        return texts.get("病例特点", "")
+        return "".join(texts.get(x, "") for x in ("病例特点", "拟诊讨论", "诊疗计划"))
     if role in ("SUP", "DAILY"):
         return texts.get("正文", "")
     if role == "PRE":
         return texts.get("简要病情", "")
     if role == "POST":
-        return texts.get("手术简要经过", "") + texts.get("术后处理措施", "")
+        return texts.get("术后处理措施", "")
     return ""
 
 
@@ -244,7 +262,10 @@ def _load_slots(path, ids):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stats", required=True)
+    ap.add_argument("--stats")
+    ap.add_argument("--kb")
+    ap.add_argument("--no-kb", action="store_true")
+    ap.add_argument("--kb-only", action="store_true", help="纯路线 B 公开先验模式（不加载医院统计表，0.30）")
     ap.add_argument("--mode", required=True, choices=("free", "paired"))
     ap.add_argument("--n", type=int, default=500)
     ap.add_argument("--slots")
@@ -258,17 +279,26 @@ def main():
     ap.add_argument("--prev-note", action="store_true", help="病程提示词带上一篇病程，要求不照搬（0.1.6 W-8B 对照臂）")
     ap.add_argument("--no-filler", action="store_true", help="病程提示词加一条不写笼统套话（0.1.7 W-8B 对照臂）")
     ap.add_argument("--no-filler2", action="store_true", help="同上，但不点套话的名（0.1.8 W-8B 对照臂 D）")
+    ap.add_argument("--num-placeholder", action="store_true", help="将事实中的日期/数值替换为 <D1>/<N1> 占位符并由程序确定性回填（0.21.2 / S3）")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    if not a.stats and not a.kb_only:
+        raise SafeError("needs_stats_or_kb_only")
     os.umask(0o077)
     os.makedirs(a.out, exist_ok=True)
-    with open(a.stats, encoding="utf-8") as f:
-        stats = json.load(f)
+    kb_data = None if a.no_kb else (kb.load_kb(a.kb) if a.kb else kb.load_default_kb())
+    if a.kb_only:
+        stats = kb.build_b_only_stats(kb_data)
+    else:
+        with open(a.stats, encoding="utf-8") as f:
+            stats = json.load(f)
+        if kb_data is not None:
+            stats["_kb"] = kb_data
     try:
         planner.require_stats(stats)
     except planner.StatsVersionError:
         raise SafeError("stats_version_rebuild_with_" + planner.STATS_VERSION)
-    w = writer.TemplateWriter() if a.writer == "template" else writer.LLMWriter(a.base_url, a.model, a.raw)
+    w = writer.TemplateWriter() if a.writer == "template" else writer.LLMWriter(a.base_url, a.model, a.raw, num_placeholder=a.num_placeholder)
     w.prev_note = a.prev_note
     if a.no_filler and a.no_filler2:
         raise SafeError("no_filler_both")
@@ -319,7 +349,7 @@ def main():
                   "calls_per_kchar": round(1000 * w.calls / tally["chars"], 3) if tally.get("chars") else None,
                   "calls_per_adm": round(w.calls / max(1, tally["kept"]), 2), "first_pass_rate": round(tally.get("first_pass", 0) / max(1, tally["planned"]), 4),
                   "discard_rate": round(tally["discarded"] / max(1, tally["planned"]), 4), "version": VERSION, "seed": a.seed, "mode": a.mode, "writer": a.writer,
-                  "prev_note": a.prev_note, "no_filler": a.no_filler, "no_filler2": a.no_filler2, "model": a.model if a.writer == "llm" else None})
+                  "prev_note": a.prev_note, "no_filler": a.no_filler, "no_filler2": a.no_filler2, "num_placeholder": a.num_placeholder, "model": a.model if a.writer == "llm" else None})
     with open(os.path.join(a.out, "counts.json"), "w", encoding="utf-8") as f:
         json.dump(tally, f, ensure_ascii=False, indent=1, sort_keys=True)
     with open(os.path.join(a.out, "discard.csv"), "w", encoding="utf-8", newline="") as f:

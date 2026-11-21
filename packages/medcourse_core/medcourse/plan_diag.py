@@ -46,7 +46,7 @@ import os
 import random
 import re
 
-from . import compiler, gate, icd, planner, stats as st_mod
+from . import compiler, gate, icd, kb, planner, stats as st_mod
 from .drug_class import drug_class, indicated, subclass
 from .safe import guarded, log
 
@@ -89,6 +89,7 @@ def diagnose(stats, n, seed):
         specs = planner.schedule(j, stats, rng)
         c["plan_check_failed"] += bool(planner.check_plan(j, specs))
         c["planned"] += 1
+        c["kb_matched"] += bool(j.get("kb_facts"))
         p = j["patient"]
         name, code = p["primary_dx"]["name"], p["primary_dx"]["code3"]
         sname = p["primary_dx"].get("stats_name") or name
@@ -152,7 +153,9 @@ def diagnose(stats, n, seed):
         # 0.1.9：主诉表只到节层
         src = j["chief"].get("source")
         c[f"level_chief_{src}"] += 1
-        t_cc = planner._table(stats, "chief_symptoms", planner.fine_strata(strata))["items"]
+        fs_cc = planner.fine_strata(strata)
+        cc_layer = next((s for s in fs_cc if any(planner.sym_ok(x, p) for x in (((stats.get("chief_symptoms") or {}).get(s) or {}).get("items") or {}))), None)
+        t_cc = {x: n for x, n in stats["chief_symptoms"][cc_layer]["items"].items() if planner.sym_ok(x, p)} if cc_layer else {}
         c["chief_table_empty"] += not t_cc
         c["chief_not_in_table"] += src in ("name", "code3", "block") and any(x not in t_cc for x in j["chief"]["symptoms"])
         c["chief_from_chapter"] += src in ("chapter", "global")
@@ -502,14 +505,25 @@ def v019(c, stats, j, specs, plans, p):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stats", required=True)
+    ap.add_argument("--stats")
+    ap.add_argument("--kb")
+    ap.add_argument("--no-kb", action="store_true")
+    ap.add_argument("--kb-only", action="store_true")
     ap.add_argument("--n", type=int, default=500)
     ap.add_argument("--seed", type=int, default=20261102)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    if not a.stats and not a.kb_only:
+        raise SystemExit("needs --stats or --kb-only")
     os.umask(0o077)
-    with open(a.stats, encoding="utf-8") as f:
-        stats = json.load(f)
+    kb_data = None if a.no_kb else (kb.load_kb(a.kb) if a.kb else kb.load_default_kb())
+    if a.kb_only:
+        stats = kb.build_b_only_stats(kb_data)
+    else:
+        with open(a.stats, encoding="utf-8") as f:
+            stats = json.load(f)
+        if kb_data is not None:
+            stats["_kb"] = kb_data
     rows = diagnose(stats, a.n, a.seed)
     with open(a.out, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)

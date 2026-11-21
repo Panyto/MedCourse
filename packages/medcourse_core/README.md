@@ -1,3 +1,57 @@
+# medcourse_core v0.3.2（诊断检查耦合、当日术前/无切口门禁补漏与正则重构瘦身）
+
+- 对应依据：针对 `BLIND10` 与 `SYNTH_KB40` 临床质检暴露的诊断性影像错配（如急性阑尾炎/急性心肌梗死/输尿管结石“检查全阴性”）、手术当日术前病程写“术后第N天”逃逸、经尿道/局部麻醉无切口术式写“切口/引流”及重复体力/体征句式等问题做上游修复；同步清理核心模块冗余正则，将核心 4 模块（`planner.py`、`gate.py`、`compiler.py`、`kb.py`）`re.*` 调用从 157 处降至 85 处（`gate.py` 由 757 行减至 705 行）。不改动 `stats.py`、`plan_diag.py`、`out_diag.py`、`contract.py`、`synth_export.py` 与冻结 `stats_v021.json`。
+- 四项上游微修与重构内容：
+  1. **诊断性影像/内镜/造影耦合与术前回报时序收口**（`kb.py`、`planner.py`）：`kb.build_b_only_stats` 补全医院级检查分母与心肾胰腺关键化验分位数，打通 `--kb-only` 冷启动 `exam_lifts` 计算；`plan_journey` 对器官明确且未抽中诊断性影像的病例以独立 `diag_img_v032` 随机流补入 1 项无创靶器官影像，`mark_exam_findings` 对仍无 `diagnostic=True` 的靶器官检查按造影/内镜/影像优先级保底标阳；外科非同台术中检查的非 `with_proc` 诊断影像在 `result_day > do_day` 时钳位至不晚于 `do_day`。
+  2. **手术当日术前防泄露与经自然腔道无切口门禁**（`compiler.py`、`writer.py`、`gate.py`）：`future_leak` 与 `check_admission` 新增 `day == op_d0 and k < post_k` 当日术前边界检测，拦截当日术前病程误写“术后第N天”或“手术已完成”；`compiler` 向无切口/局麻/静脉麻醉术式的 `POST`/`SUP`/`DAILY`/`DS` 注入明确无切口提示，`writer.RETRY_GUIDANCE` 补充 `"no_incision_leak"` 纠偏指引，`gate.check_admission` 同步兜底拦截 `no_incision_leak`。
+  3. **体格检查重复体征、出院记录入院日与跨龄成人症状收紧**（`gate.py`、`compiler.py`、`planner.py`）：`_PE_DUP_VITALS` 增补 `"已另录|见前录|如前所述"`；`DS.诊疗经过` 显式写入 `患者于{admit_date}入院后完善相关检查` 锚定入院时间；`sym_ok` 拦截 10 岁以下儿童误抽 `胸骨后压榨/绝经/前列腺` 类成人症状。
+  4. **核心代码正则瘦身与 `TestV032` 单测（209 条）**（`planner.py`、`gate.py`、`compiler.py`、`kb.py`、`tests/test_mc.py`）：用纯 Python 词表判定 `_has_any`、`_cjk5` 前缀抽取、`no_incision` 共享谓词与统一删句器 `_drop_clauses_if` 替代大量冗余正则与重复循环，4 个核心模块 `re.*` 从 157 降至 85（净减 72 处，总行数保持 3879 -> 3878 行）；`VERSION` 升至 `medcourse-core-0.3.2`，`pipeline.VERSION` 升至 `s1-pipeline-0.3.2`，新增 `TestV032`（+4 项单测）。
+- 旧断言更新说明：`tests/test_mc.py` `TestV01121.test_template_has_no_unsourced` 的 `pipeline.VERSION` 断言同步更新为 `"s1-pipeline-0.3.2"`；`TestV019.test_pipeline_pe_ref_ctx_and_ds_rewrite` 改为精确断言重写的全部 4 个 `DS` 大模型节均被重写且 `入院情况` 由 1 次增至 2 次（因 `v0.3.2` 为 `PR1` 补入诊断性 `胸部CT` 与 `admit` 事实后，重写阶段 `DS.诊疗经过` 首次即达长度门禁，不再像首轮或旧版 `v0.3.1` 那样重复 3 次尝试）。
+
+# medcourse_core v0.3.1（`P20` 与 `BLIND10` 临床审阅暴露问题的上游精准微修版；沿用 `stats_v021.json`）
+
+- 对应依据：`验收_v030重构与双底座盲测审阅_20261121.md`（人工审阅 `SYNTH_W8B_v030P20_20261121` 12 份及 `BLIND10` 32B/8B 对照盲测，定位到 8 处上游语义歧义、产科/儿科防呆缺口与闸门盲区）。不改动 `stats.py`、`plan_diag.py`、`out_diag.py`、`contract.py`、`synth_export.py` 与冻结 `stats_v021.json`。
+- 八项微修内容：
+  1. **产科足月破水孕周、主诉急性病程与未实施分娩合并症防呆**（`icd.py`、`planner.py`）：`week_range` 补全 `胎膜早破/先兆临产/胎儿窘迫/羊水` 等足月范畴（37-41 周）及晚孕并发症（28-39 周）；“停经X周，阴道流液Y”在伴随症状抽取到孕周时长时收敛为急性时限（2-12 小时或 1-3 天）；`can_comorb` 拦截非分娩住院误抽 `单胎活产/头位顺产`，非主诊断 `术后/产后` 合并症不进 `at_admission`。
+  2. **儿科慢性肾病/贫血化验极性校准与儿科单次极量防呆**（`planner.py`）：`lab_ctx`/`draw_lab` 对 `慢性肾脏病3-5期/肾衰竭/尿毒症` 强制 `CREA`/`BUN` 偏高（CKD4-5/尿毒症儿童 `CREA >= 180`、成人 `>= 442`），对 `贫血` 强制 `HGB` 偏低；`_med_entry` 新增 `_child_dose_ok`，对 `14 岁以下` 患儿拦截 `pip_tazo`/`vancomycin` 等超体重上限或 `<6 岁` 非豁免克级成人量并优先退回儿科剂量或留空。
+  3. **术后事实手术日去歧义 & 术前屏蔽 `术后病理`**（`compiler.py`）：`op_done` 改写为 `今日为术后第K天（患者已于YYYY-MM-DD行……术）` 彻底消除“于术后第2天行手术”误读；`FP` 待回报及 `COURSE` 当日开单在术前排除 `术后病理`。
+  4. **`POST` 手术日强提示与住院级 `postop_day_mismatch` 兜底**（`compiler.py`、`gate.py`）：`POST` 三节补充禁止写 `术后第N天` 提示；`gate.check_admission` 同步校验 `POST` 与 `SUP/DAILY` 术后天数，配合 `adm_rewrites` 清零漏网错日。
+  5. **移除 `"延续情况："` 外泄前缀 & 屏蔽待检催办句结转**（`pipeline.py`、`compiler.py`、`gate.py`）：`pick_carry_fact` 过滤 `"完善/进一步明确"` 开单催办句；`pipeline` 直接传入纯净延续事实并将 `"延续情况"` 纳入 `gate.LEAK`。
+  6. **面板级异常化验自相矛盾检测**（`compiler.py`、`gate.py`）：`compiler` 传入精确 `abn_lab_keys`（含异常发现检验），`gate` 按异常检验面板精细拦截（允许“肝功能异常”同段写“血常规未见异常”，同时精准拦截 `肌钙蛋白/凝血` 异常或 `"上述指标在正常范围"`/`"未见明显升高"` 谎称正常）。
+  7. **非手术伤口护理、`DAILY` 误写上级查房、查体重复体征与高频句首复读**（`gate.py`、`compiler.py`、`writer.py`）：`_POSTOP` 增补 `(?:切口|伤口)...清洁/拆线`；新增 `senior_in_daily`、`pe_dup_vitals` 节级门禁及对应 `RETRY_GUIDANCE`；`repeated_clauses` 与 `repair_section` 新增连续 `>=6` 句相同 5 字中文句首（如 `"患者无特殊..."` 循环）的检测与去重。
+  8. **版本与单测（205 条）**：`VERSION` 升至 `medcourse-core-0.3.1`，`pipeline.VERSION` 升至 `s1-pipeline-0.3.1`，新增 `TestV031`（+5 项单测）。
+
+# medcourse_core v0.3.0（路线 B 全频谱接入、上游四类主诉/精确术后天数重构、免微调国标写手与切句正则瘦身）
+
+- 对应依据：人工审阅 `S3_pkg2` 及未微调 `V0211` 暴露的四类上游临床/状态缺陷（术后第 K 天错位、术前伤口/引流隐性泄露、“停经已消失”/“已行本次化疗”冲突、薄弱现病史/查体导致的阴性堆砌）与 `gate.py` 顿号误切否定列表风险，以及已收官的路线 B `kb_v2.2_agentic`（17 病种 86.1% 可用率）。
+- 六项架构重构与改动：
+  1. **路线 B 公共知识表清洗接入**（`tools/build_kb_table.py` -> `medcourse/data/kb_v22.json`、`medcourse/kb.py`、`planner.py`、`pipeline.py`、`plan_diag.py`）：`pipeline` 与 `plan_diag` 默认加载公开 `kb_v22.json`（并新增 `--kb-only` 纯公开冷启动模式与 `--no-kb` 开关）；融合卫健委路径的 `surgery_gate`、`exams_required`、`chief_symptoms`、`signs` 与 `postop_watch`，且完全零接触医院原文。
+  2. **四类主诉临床状态机 & 产科/高龄防呆**（`planner.py`）：主诉明确划分为 `scheduled / obstetric / lesion / acute` 四类；`NON_EVOLVING_SYMS`（停经/妊娠/待产）不进入每日演进列表，杜绝“停经已消失”；实体肿物/疝术前保持存在、术后消退；孕 ≥20 周或待产禁开米非司酮等流产药；`CHILD_DX`/`ADULT_DX` 阻断跨龄病名并收紧细层 `ds_only` 合并症抽样。
+  3. **国标七要素 `HR 现病史` + 器官一致查体与化验极性**（`kb.py`、`compiler.py`）：`HR.现病史` 给出起病/伴随/≤3 项解剖鉴别阴性/一般情况/检查摘要完整结构并收紧长度上限（`260`）；`HR.体格检查/专科情况` 通过 `organ_pe_facts` 对齐靶器官阳阴性体征；`_narrative_exam_text` 对异常化验标出 `（偏高/偏低）` 并传 `has_abn_labs`。
+  4. **精确术后第 K 天事实与术前伤口/引流物理锁**（`compiler.py`、`gate.py`）：术后病程传入精确 `postop_day` 并通过 `_POSTOP_DAY_MENTION` 兼容中文/阿拉伯数字校验（禁止错日或手术当日写术后第 1 天）；术前显式禁写手术完成、切口敷料干洁与引流管通畅（同步进入 `gate.before_op_done` 与 `gate.future_leak`）。
+  5. **废除顿号切句误伤 & 大模型端禁用破坏性切句正则与尾句硬拼**（`gate.py`、`compiler.py`、`pipeline.py`）：`_CLAUSE_SPLIT`/`_CLAUSE_PIECE` 移除 `、` 防止切断否定列表；`LLMWriter` (`splice_copy=False`) 采用生成前 `pick_carry_fact` 延续摘要注入 + 4 轮带 `retry_fails` 纠正提示重试，并在 `pipeline` 端仅对 `PIPELINE_SAFE_FIX`（截断/复读/英文/元话语/提示外泄）做格式修补；`TemplateWriter`（`splice_copy=True`）保持原有回归通道兼容。
+  6. **《病历书写基本规范》通用临床提示词**（`writer.py`）：`SYSTEM` 更新为去 AI 腔、禁空白表单残片与零隐私双示例临床住院医师提示词。
+- 旧断言更新说明：`tests/test_mc.py` L2803 `TestV01121.test_template_has_no_unsourced` 的 `pipeline.VERSION` 断言由 `"s1-pipeline-0.21.3"` 同步更新为 `"s1-pipeline-0.3.0"`，新增 `TestV030`（+5 条单测）。
+
+# medcourse_core v0.2.1.2（`S3` 回译微调与 `M2_pkg1` 审阅收口版；沿用 `stats_v021.json`）
+
+- 对应依据：`验收_M2_pkg1.md`（`M2_pkg1_20261120` 在 `fold 8` 单次盲测实现真实未来泄露 `0/1,016`、`A_n_docs=8.19`、`B_B3=0.286`、`B_exam=7.89`，同步定位到零微调写手与 `DS/planning` 五处确定性改进点）与 `S3` 回译微调数值/日期占位符需求。
+- 专项改动（沿用锁定 `stats_v021.json` 不重算；**不修改 `stats.py`、`plan_diag.py`、`out_diag.py`、`contract.py`**）：
+  1. **混龄/混性别/产科规划耦合收口**（`planner.py`）：新增 `sym_ok`（阻断成年/高龄错抽婴幼儿“哭闹”等及男/高龄错抽“停经”）、`proc_for` 成年过滤 `_CHILD_ONLY_PROC`（阻断成年患者抽到儿童鞘状突/疝囊高位结扎）、`dept_ok` 阻止 `N20-N23`/`N40-N51` 泌尿男科落入风湿科、以及产科“停经”主诉与 `gest_weeks` 对齐。
+  2. **前缀可观测性与反事实前缀非预期性固化**（`compiler.py`）：`op_state` 与文末 `nonsurgical`/`before_op`/`no_incision` 标记完全基于当前已决定/已发生前缀（取消全局 `j["surgical"]` 对未决未来手术日的依赖），并通过双臂反事实前缀单测；扩充 `_NO_INCISION_NAME`（经尿道/输尿管软镜/膀胱镜/宫腔镜等自然腔道术式不写切口引流）、`_PLAN_WORD` 拦截 `尚未/未行/未实施` 拷入术后文书、疑似主诊断 `FP 诊疗计划` 增防提前定论提示。
+  3. **`DS 诊疗经过` 日历日期与临床重点前置**（`compiler.py`）：改用 `doc_date + "查"` 替换 `"第0天"`，消除 `C2ST` 人造日序线索与 `q6_kit` `"天血常规"` 截词畸变，并将手术/异常诊断检查/用药/确诊变化排于常规正常检查之前以抗等长截断趋同。
+  4. **`--num-placeholder` 数值/日期确定性占位与回填**（`writer.py`、`gate.py`、`pipeline.py`）：`pipeline.VERSION` 升至 `s1-pipeline-0.21.2`，新增 `--num-placeholder`；`mask_plan`/`unmask_text` 按首次出现映射 `<N1>`/`<D1>` 并保护 `×10^9/L` 与 `2型糖尿病`，`gate.LEAK` 增加 `"<N"`/`"<D"` 拦截残留占位符。
+
+# medcourse_core v0.2.1.1（M1 `B_tfidf <= 0.40` 相邻查重专项热修版；沿用 `stats_v021.json`）
+
+- 对应验收：`验收_S1S2_pkg17.md` 显示 `S1S2_pkg17_20261120` 仅 Rule 1 指标 `B_tfidf = 0.4309 > 0.40` 略超标（其余 9/10 M1 机器线及多项 M2 指标全部达标）。
+- 根因定位：相邻角色对分解显示 `pkg17` 新增了 `283` 对 `SUP→SUP`（`mean = 0.4842`，单独贡献 `0.1771`），且病程间多句 `apply_copy` 顺延叠加、后续 `SUP` 查房句重复主诊断与全部鉴别诊断模板句。
+- 专项改动（仅修改 6 个文件：`compiler.py`、`pipeline.py`、`VERSION`、`OWNERSHIP.md`、`README.md`、`tests/test_mc.py`；其余 27 个文件包括 `stats.py`、`planner.py`、`gate.py`、`out_diag.py`、`plan_diag.py` 逐字节保持与 `v0.2.1` 一致）：
+  1. **首程 `FP` 拷贝源扩充 & `POST` 剔除术中叙事**（`pipeline._note_copy_source`）：`FP` 源由仅 `病例特点` 扩充为 `病例特点 + 拟诊讨论 + 诊疗计划`，补足首跳 `C1a` 候选池；`POST` 源仅取 `术后处理措施`、排除 `手术简要经过`。
+  2. **按角色对句数上限与预算再平衡**（`compiler.copy_budget`、`compiler.copy_max_sents`、`compiler.apply_copy`、`pipeline.write_doc`）：`FP→*` 上提至 `min(0.60, base * 1.90)` 且不限句数；`PRE`/`POST` 维持 `min(0.50, base * 1.45)`、上限 `2` 句；`SUP→SUP` 收紧至 `min(0.22, base * 0.85)`、上限 `1` 句；其余病程对 `min(0.28, base * 0.85)`、上限 `2` 句。
+  3. **后续 `SUP` 查房分析主题与用药轮换**（`compiler.SUP_FOLLOWUP_THEMES`、`compiler.course_focus`）：首次 `SUP` 或主诊断尚为“疑似”时保留鉴别句；主诊断明确后的后续 `SUP` 按 `spec["k"]` 轮换疗效/指标/恢复观察主题与在用药，避免机械重复鉴别套话。
+- 统计表与测试：继续沿用已锁定的 `derived/m2_f27_v021/stats_v021.json`（SHA256 `0fc4a2a6f2b19d18e6afcc8b307ca62bacd6b323f3a9391b3eb2e53aa78fb5e2`，不重建统计表）；同步更新 `tests/test_mc.py` 中 `pipeline.VERSION` 断言并新增 `TestV0211`（+3 项单元测试，共 `189` 项）。
+
 # medcourse_core v0.2.1（M2 完整动态表与校准版：`mc-stats-0.21` 三项动态表 + `B_B3` / `B_copy5` / 血常规极值校准 + 写手端 `qa_*` 收口）
 
 2026-11-17，总经理。依据：`验收_S1S2_pkg16.md`（`v0.2.0.2` M1 回归线 10/10 全过、严格泄露 0/0/0，但 `B_B3=0.094`、`B_copy5=0.157`、`WBC>12` 与 `PLT<100` 偏高 +9.5pp、且写手端余留 `before_op_done=11`、`past_conflict=9` 等 `qa_` 命中），并合入 M2 剩余三项动态表逻辑（`stats.py` 升 **`mc-stats-0.21`**）。`S2C4` 第二段完成后可直接用本版重算 `stats_v021.json`，若任意新动态表为空/缺省则自动回退旧逻辑，不破坏已有夹具与回归。

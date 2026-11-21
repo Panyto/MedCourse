@@ -52,10 +52,11 @@
 import datetime as dt
 import hashlib
 import math
+import random
 import re
 from statistics import NormalDist
 
-from . import icd
+from . import icd, kb
 from .contract import CONTRACT_VERSION, validate_docspecs, validate_journey
 from .drug_class import drug_class, indicated, is_chronic, oral_ok, subclass
 from .rules import setup
@@ -176,17 +177,57 @@ _DUR = re.compile(r"(\d+)\s*(?:个)?(小时|天|日|周|月|年)")
 _DUR_YEARS = {"小时": 1 / 8760, "天": 1 / 365, "日": 1 / 365, "周": 1 / 52, "月": 1 / 12, "年": 1}
 
 
+def _has_any(text, words):
+    t = text or ""
+    return any(w in t for w in words)
+
+
 def duration_ok(text, age):
     """病程时长不能比年龄还长：章层的时长表成人儿童混在一起，0.1.4 给儿童配过成人的时长（b7_AGE-HIST）。"""
     m = _DUR.search(text or "")
     return not m or int(m.group(1)) * _DUR_YEARS[m.group(2)] <= max(age, 1 / 12)
+
+
+_INFANT_WORDS = ("哭闹", "拒奶", "吐奶", "吃奶", "奶量", "呛奶", "溢奶", "囟门")
+_CHILD_DEV_WORDS = ("生长发育", "语言发育", "言语发育", "语言落后", "运动落后", "遗尿")
+_FEMALE_SYM_WORDS = ("停经", "胎动", "见红", "破水", "宫缩", "阴道流血", "阴道出血", "阴道流液", "白带", "痛经", "月经")
+_PREG_SYM_WORDS = ("停经", "胎动", "见红", "破水", "宫缩")
+_ADULT_ONLY_SYM_WORDS = ("胸骨后压榨", "绝经", "前列腺")
+
+
+def sym_ok(sym, p):
+    """0.21.2 / 0.3.2：混龄/混性别/跨孕产层主诉与伴随症状耦合校验。"""
+    s = sym or ""
+    if p["age"] >= 6 and _has_any(s, _INFANT_WORDS):
+        return False
+    if p["age"] >= CHILD_AGE and _has_any(s, _CHILD_DEV_WORDS):
+        return False
+    if p["age"] < 10 and _has_any(s, _ADULT_ONLY_SYM_WORDS):
+        return False
+    if p["sex"] == "男" and _has_any(s, _FEMALE_SYM_WORDS):
+        return False
+    if (p["age"] < 12 or p["age"] >= 55) and _has_any(s, _PREG_SYM_WORDS):
+        return False
+    return True
+
+
 PREG_NAME = re.compile(r"妊娠|孕\d|宫内孕|分娩|临产")
 PREG_AGE = (15, 49)
-_DEPT_FEMALE = re.compile(r"妇|产")
-_DEPT_CHILD = re.compile(r"儿|新生")
-_DEPT_OLD = re.compile(r"老年")
-# 章层和全局层把成人和儿童混在一起：这些病不给 18 岁以下
-ADULT_DX = re.compile(r"高血压|2型糖尿病|冠心病|冠状动脉|心肌梗死|脑梗|脑出血|慢性阻塞|慢阻肺|房颤|心房颤动|痛风|前列腺|子宫肌瘤|绝经|动脉硬化|高脂血症|骨质疏松|老年")
+# 章层和全局层把成人和儿童混在一起：这些病不给 18 岁以下 / 成人不给儿童病
+ADULT_DX = re.compile(
+    r"高血压|2型糖尿病|冠心病|冠状动脉|心肌梗死|脑梗|脑出血|脑卒中|脑血栓|蛛网膜下腔出血|"
+    r"帕金森|阿尔茨海默|慢性阻塞|慢阻肺|肺源性心脏病|肺心病|房颤|心房颤动|痛风|前列腺|前列腺增生|"
+    r"子宫肌瘤|绝经|动脉硬化|高脂血症|骨质疏松|老年"
+)
+_CHILD_DX_WORDS = (
+    "发育障碍", "发育迟缓", "发育落后", "孤独症", "自闭症", "多动障碍", "小儿", "婴幼儿", "新生儿",
+    "黏膜皮肤淋巴结综合征", "皮肤黏膜淋巴结综合征", "川崎病", "手足口病", "毛细支气管炎", "疱疹性咽峡炎",
+    "幼年", "少儿", "早产儿", "足月儿", "母乳性黄疸", "佝偻病", "热性惊厥", "高热惊厥", "咽结合膜热", "百日咳", "遗尿症", "抽动障碍", "脐炎",
+)
+NON_EVOLVING_SYMS = {"停经", "妊娠", "待产"}
+_LESION_WORDS = ("肿物", "肿块", "结节", "占位", "息肉", "囊肿", "肌瘤", "腺瘤", "白内障", "疝")
+_OBSTETRIC_WORDS = ("待产", "临产", "顺产", "分娩", "活产", "剖宫产", "保胎", "先兆早产")
+_ABORTIFACIENT_WORDS = ("米非司酮", "米索前列醇", "依沙吖啶", "利凡诺")
 # 0.1.6：术式大类的适应证关键词（公开临床常识，不来自病历）。章层、全局层的术式只给关键词对得上的诊断；
 # 不在表里的大类（气管切开）没有固定的适应证写法，仍只在主诊断名、code3 两层取
 FAMILY_DX = {
@@ -284,25 +325,23 @@ def proc_has_exam(proc_name, key):
 
 # 0.1.11（第十次 M2）：取了组织的手术才开术后病理。局部、静脉麻醉或未配麻醉的操作（造影、介入、康复……）不开，名字里写了切除、活检、清宫这类取组织的
 # 除外（肠镜下息肉切除、清宫照开）。0.1.10 冠脉造影后写了"术后病理检查结果符合急性心肌梗死"
-_TISSUE = re.compile(r"切除|摘除|活检|清宫|刮宫|剔除|电切|剥除|取材|息肉|外剥内扎")
+_TISSUE_WORDS = ("切除", "摘除", "活检", "清宫", "刮宫", "剔除", "电切", "剥除", "取材", "息肉", "外剥内扎")
 
 
 def takes_tissue(a):
-    return anesthesia_for(a["name"]) not in ("", "局部麻醉", "静脉麻醉") or bool(_TISSUE.search(a["name"]))
+    return anesthesia_for(a["name"]) not in ("", "局部麻醉", "静脉麻醉") or _has_any(a["name"], _TISSUE_WORDS)
 
 
 # 0.1.8：这些诊断不是一种"病"（化疗、复查、术后），检查不写"提示＋诊断名"
-_NOT_FINDING_DX = re.compile(r"治疗|术后|随访|复查|化疗|放疗|康复|维持|检查|观察|待产|分娩|妊娠")
+_NOT_FINDING_WORDS = ("治疗", "术后", "随访", "复查", "化疗", "放疗", "康复", "维持", "检查", "观察", "待产", "分娩", "妊娠")
 DIAG_LIFT = 2.0
-# 0.1.11（第十次 M7）：部位和诊断器官对得上的检查，比值线放宽到 1.2（2.0 对腹部 CT 这类常见检查太严，exam_diag_none 248/500）；
-# 一项都没有时补部位对得上、比值最高的那项，比值至少 1.0。部位核对是 0.1.9 加的，放宽以后仍不会写出"心脏超声提示脑梗死"
 DIAG_LIFT_SITE = 1.2
 DIAG_ADD_MIN = 1.0
 
 
 def finding_name(dx_name):
-    n = re.sub(r"[？?]", "", dx_name or "").strip()
-    return None if not n or _NOT_FINDING_DX.search(n) else n
+    n = (dx_name or "").replace("？", "").replace("?", "").strip()
+    return None if not n or _has_any(n, _NOT_FINDING_WORDS) else n
 
 
 # 0.1.11（第十次 M8）：检查结论、病理写三位码的类目名（公开 ICD 类目表），去掉"伴有……""不伴有……"这类限定尾巴；
@@ -315,7 +354,7 @@ def finding_label(dx_name, code3):
     if base is None:
         return None
     cat = icd.category(code3) if code3 and len(code3) == 3 else None
-    if cat and len(cat) < len(base) and not _NOT_FINDING_DX.search(cat):
+    if cat and len(cat) < len(base) and not _has_any(cat, _NOT_FINDING_WORDS):
         base = cat
     return _QUAL_TAIL.sub("", base) or base
 
@@ -324,19 +363,19 @@ def finding_label(dx_name, code3):
 TREAT_DX = re.compile(r"化疗|化学治疗|放疗|放射治疗|靶向治疗|免疫治疗|生物治疗|内分泌治疗|复查|随访|内固定.{0,2}取出|取出内固定")
 TREAT_CODE3 = {"Z51", "Z08", "Z09", "Z47", "Z48"}
 _TREAT_TAIL = re.compile(r"(?:术后)?(?:的)?(?:维持性|辅助|新辅助|姑息性?)?(?:化学治疗|化疗|放射治疗|放疗|靶向治疗|免疫治疗|生物治疗|内分泌治疗|复查|随访|治疗)$")
-_CANCER = re.compile(r"癌|恶性|肉瘤|淋巴瘤|白血病|骨髓瘤|母细胞瘤")
+_CANCER_WORDS = ("癌", "恶性", "肉瘤", "淋巴瘤", "白血病", "骨髓瘤", "母细胞瘤")
 
 
 def treatment_kind(name, code3):
     """化疗/放疗/复查/取内固定，不是这类住院返回 None。"""
     n = name or ""
-    if re.search(r"放疗|放射治疗", n):
+    if _has_any(n, ("放疗", "放射治疗")):
         return "放疗"
-    if re.search(r"化疗|化学治疗|靶向治疗|免疫治疗|生物治疗|内分泌治疗", n):
+    if _has_any(n, ("化疗", "化学治疗", "靶向治疗", "免疫治疗", "生物治疗", "内分泌治疗")):
         return "化疗"
-    if re.search(r"内固定.{0,2}取出|取出内固定", n) or code3 == "Z47":
+    if "取出" in n and "内固定" in n or code3 == "Z47":
         return "取内固定"
-    if re.search(r"复查|随访", n) or code3 in ("Z08", "Z09", "Z48"):
+    if _has_any(n, ("复查", "随访")) or code3 in ("Z08", "Z09", "Z48"):
         return "复查"
     if code3 == "Z51":
         return "化疗"
@@ -347,7 +386,7 @@ _PRIOR_DX_TAIL = re.compile(r"(?:术后|治疗后|放化疗后|化疗后|放疗�
 
 
 def _clean_under(s):
-    n = _TREAT_TAIL.sub("", re.sub(r"[？?]", "", s or "")).strip("，,、 ")
+    n = _TREAT_TAIL.sub("", (s or "").replace("？", "").replace("?", "")).strip("，,、 ")
     n = _PRIOR_DX_TAIL.sub("", n).strip("，,、 ")
     return n if len(n) >= 2 and not TREAT_DX.search(n) else None
 
@@ -355,7 +394,7 @@ def _clean_under(s):
 def underlying_dx(name, comorb):
     """治疗性住院的原发病：合并症里第一个肿瘤名（去掉末尾术后/治疗后等入院前修饰）；没有就把诊断名去掉"化疗""复查"这类尾巴；都没有返回 None。"""
     for c in comorb:
-        if _CANCER.search(c):
+        if _has_any(c, _CANCER_WORDS):
             return _clean_under(c)
     return _clean_under(name)
 
@@ -430,6 +469,15 @@ def mark_exam_findings(stats, strata, exams, fname, organs=None):
             e["finding"] = FINDING_TEXT.get(e["kind"], "符合{f}表现").format(f=fname)
         else:
             e.pop("finding", None)
+    if fname and organs and not any(e.get("diagnostic") for e in exams):
+        cands = [e for e in exams if not e["items"] and "abnormal" in e and diag_eligible(e["key"])
+                 and e["kind"] in ("造影", "内镜", "影像") and site_ok(e["key"], e["region"], organs)]
+        if cands:
+            _kind_p = {"造影": 0, "内镜": 1, "影像": 2}
+            _key_p = {"冠脉造影": 0, "脑血管造影": 1, "CT": 2, "磁共振": 3, "MRCP": 4, "ERCP": 5, "胃镜": 6, "肠镜": 7, "超声": 8, "心脏超声": 9, "X线": 10}
+            best_e = min(cands, key=lambda e: (_kind_p.get(e["kind"], 9), _key_p.get(e["key"], 99), e.get("id") or ""))
+            best_e["abnormal"] = best_e["diagnostic"] = True
+            best_e["finding"] = FINDING_TEXT.get(best_e["kind"], "符合{f}表现").format(f=fname)
 
 
 def _inv_group(key):
@@ -473,27 +521,31 @@ def _sub(stats, name, key):
 
 
 def dx_ok(name, sex, age):
-    """主诊断、合并症、鉴别诊断都过性别和年龄：slot_filter 加上成人病不给儿童。"""
+    """主诊断、合并症、鉴别诊断都过性别和年龄：slot_filter 加上成人病不给儿童、儿童发育障碍不给成人。"""
     if age < 18 and ADULT_DX.search(name):
+        return False
+    if age >= 18 and _has_any(name, _CHILD_DX_WORDS):
         return False
     return not slot_filter({"dx_name": name, "dx_code3": "", "age": age, "sex": sex})
 
 
-def dept_ok(dept, sex, age, pregnant):
-    if sex == "男" and _DEPT_FEMALE.search(dept):
+def dept_ok(dept, sex, age, pregnant, code=""):
+    if sex == "男" and _has_any(dept, ("妇", "产")):
         return False
     if sex == "女" and "产" in dept and "妇" not in dept and not pregnant:
         return False
     if "男科" in dept and sex != "男":
         return False
-    if age >= 18 and _DEPT_CHILD.search(dept):
+    if age >= 18 and _has_any(dept, ("儿", "新生")):
         return False
-    return not (age < 14 and _DEPT_OLD.search(dept))
+    if re.match(r"^N(?:2[0-3]|4\d|5[01])", code or "") and "风湿" in dept:
+        return False
+    return not (age < 14 and "老年" in (dept or ""))
 
 
 def side_of(text):
     """诊断里的侧别：双、左、右，没有返回 None。"""
-    s = set(re.findall(r"左|右|双", text or ""))
+    s = {c for c in ("左", "右", "双") if c in (text or "")}
     if "双" in s or {"左", "右"} <= s:
         return "双"
     return next(iter(s), None)
@@ -588,6 +640,14 @@ def dx_name_for(stats, rng, code, ch):
     return (icd.realize(stem, rng), "chapter_stem") if stem else (None, None)
 
 
+_DELIVERY_OUTCOME_WORDS = ("活产", "死产", "死胎", "顺产", "难产", "分娩", "产钳", "胎头吸引", "臀位牵引", "产后", "产褥")
+
+
+def _is_delivery_dx(text):
+    t = text or ""
+    return _has_any(t, _DELIVERY_OUTCOME_WORDS) or ("会阴" in t and "裂伤" in t)
+
+
 def gest_for(name, rng):
     """孕周：诊断名写了就用名字里的（0.1.5 随机 8–40 周，和"孕39周待产"对不上），没写按名字定范围，再没有随机 8–40 周。"""
     w = icd.gest_weeks(name)
@@ -623,13 +683,15 @@ def draw_patient(stats, rng, jid, slot=None):
     pregnant = sex == "女" and (code.startswith("O") or bool(PREG_NAME.search(name)))
     strata = strata_of(name, code)
     if not slot:
-        dept = _pick(rng, _table_where(stats, "dept", strata, lambda d: dept_ok(d, sex, age, pregnant))) or ("儿科" if age < 14 else "内科")
+        dept = _pick(rng, _table_where(stats, "dept", strata, lambda d: dept_ok(d, sex, age, pregnant, code))) or ("儿科" if age < 14 else "内科")
     comorb, raw_comorb = [], []
     p_ds_only = _ds_only_prob(stats)
     used_grades = {s for s in (_dx_grade_stem(name),) if s}
 
     def can_comorb(term):
         if len(raw_comorb) >= MAX_COMORB or term in name or name in term or not dx_ok(term, sex, age):
+            return False
+        if _is_delivery_dx(term) and not _is_delivery_dx(name):
             return False
         if any(term in r_term or r_term in term for r_term, _ in raw_comorb):
             return False
@@ -650,13 +712,15 @@ def draw_patient(stats, rng, jid, slot=None):
             continue
         if rng.random() < n / max(1, t["n"]):
             add_comorb(term)
-    # 0.21：有真实 real_rates 时从本诊断细层补偿非慢病合并症，再按 b3_permille_sum 校准每项 ds_only 抽样率
+    # 0.21 / 0.30：合并症补齐优先锁定细层（n:name/code3/blk），存在细层表时不退回粗章层跨龄跨系统借病
+    strict_fine_c = fine_strata(strata)
+    topup_strata = strict_fine_c if any((((stats.get("comorbid") or {}).get(s) or {}).get("items")) for s in strict_fine_c) else fine_strata_c
     rr = stats.get("real_rates") or {}
     if rr.get("ds_dx_admissions") and rr.get("ds_dx_items"):
         avg_sec = max(0.0, rr["ds_dx_items"] / rr["ds_dx_admissions"] - 1.0)
         target_c = min(4, max(2, int(round(avg_sec * 0.6))))
         if sum(1 for _, ic in raw_comorb if not ic) < 2 and len(raw_comorb) < target_c:
-            for s in fine_strata_c:
+            for s in topup_strata:
                 cand = {term: n for term, n in (((stats.get("comorbid") or {}).get(s) or {}).get("items") or {}).items()
                         if can_comorb(term) and not any(past_matches(pt, term) for pt in PAST_TERMS)}
                 while sum(1 for _, ic in raw_comorb if not ic) < 2 and len(raw_comorb) < target_c and cand:
@@ -667,7 +731,7 @@ def draw_patient(stats, rng, jid, slot=None):
                 if sum(1 for _, ic in raw_comorb if not ic) >= 2 or len(raw_comorb) >= target_c:
                     break
         if len(raw_comorb) < target_c:
-            for s in fine_strata_c:
+            for s in topup_strata:
                 cand = {term: n for term, n in (((stats.get("comorbid") or {}).get(s) or {}).get("items") or {}).items() if can_comorb(term)}
                 while len(raw_comorb) < target_c and cand:
                     term = _pick(rng, cand)
@@ -685,7 +749,10 @@ def draw_patient(stats, rng, jid, slot=None):
         p_item = p_ds_only
     for term, is_chron in raw_comorb:
         # 0.21（B_B3 提分）：属既往慢病词表的合并症默认入院前即有，切断 ds_only 同步进 past_history 的自抵消
-        comorb.append({"name": term, "at_admission": True if is_chron else (rng.random() >= p_item)})
+        adm_draw = True if is_chron else (rng.random() >= p_item)
+        if not is_chron and ("术后" in term or "产后" in term) and "术后" not in name:
+            adm_draw = False
+        comorb.append({"name": term, "at_admission": adm_draw})
     past = []
     g = (stats.get("past") or {}).get(next((n for n, lo, hi in AGE_BANDS if lo <= age < hi), None)) or {}
     for term, n in sorted((g.get("items") or {}).items()):
@@ -887,7 +954,8 @@ CHILD_AGE = 14          # 0.1.11：14 岁以下的化验、用药从儿童层取
 # 0.1.11（第十次 M5）：这两项异常要有糖尿病（公开诊断标准：糖化血红蛋白、空腹血糖是糖尿病的诊断指标）。0.1.10 两份"否认糖尿病"的病人
 # 糖化血红蛋白 9.4%、9.3%
 DIABETES_MARKERS = {"HBA1C", "GLU"}
-_DIABETES = re.compile(r"糖尿病")
+_RENAL_FAIL_WORDS = ("慢性肾脏病3期", "慢性肾脏病4期", "慢性肾脏病5期", "慢性肾脏病三期", "慢性肾脏病四期", "慢性肾脏病五期", "肾衰竭", "肾功能不全", "尿毒症", "急性肾损伤")
+_SEVERE_RENAL_WORDS = ("慢性肾脏病4期", "慢性肾脏病5期", "慢性肾脏病四期", "慢性肾脏病五期", "终末期肾", "尿毒症")
 
 
 def child_layers(strata):
@@ -903,7 +971,11 @@ def lab_ctx(rng, stats, strata, p=None):
     ctx = {"z": z, "sev": _ND.cdf(z), "stats": stats, "strata": strata, "rates": {}, "q_layers": (), "diabetes": True}
     if p is not None:
         dxt = "；".join([p["primary_dx"]["name"]] + [c["name"] for c in p.get("comorbidities") or []] + list(p.get("past_history") or []))
-        ctx["diabetes"] = bool(_DIABETES.search(dxt))
+        ctx["diabetes"] = "糖尿病" in dxt
+        ctx["renal_fail"] = _has_any(dxt, _RENAL_FAIL_WORDS)
+        ctx["renal_severe"] = _has_any(dxt, _SEVERE_RENAL_WORDS)
+        ctx["anemia"] = "贫血" in dxt
+        ctx["is_child"] = p["age"] < CHILD_AGE
         if p["age"] < CHILD_AGE:
             kid = child_layers(strata)
             ctx["q_layers"], ctx["rate_strata"] = kid, kid
@@ -923,7 +995,20 @@ def draw_lab(rng, key, ctx):
     abnormal = rate > 0 and (rate >= 1 or z > _ND.inv_cdf(1 - rate))
     if key in DIABETES_MARKERS and not ctx.get("diabetes", True):
         abnormal = False
-    return _lab_value(stats, rng, key, abnormal, ctx["sev"], rate, ctx.get("q_layers") or ())
+    elif key in ("CREA", "BUN") and ctx.get("renal_fail"):
+        abnormal = True
+    elif key == "HGB" and ctx.get("anemia"):
+        abnormal = True
+    out = _lab_value(stats, rng, key, abnormal, ctx["sev"], rate, ctx.get("q_layers") or ())
+    if key in ("CREA", "BUN") and ctx.get("renal_fail"):
+        hi = REF[key][1]
+        floor_v = (180.0 if ctx.get("is_child") else 442.0) if (key == "CREA" and ctx.get("renal_severe")) else (hi * 1.25)
+        if out["flag"] != "偏高" or float(out["value"]) < floor_v:
+            out = _fmt_lab(key, floor_v + (abs(z) % 1.0) * (120.0 if key == "CREA" else 4.0))
+    elif key == "HGB" and ctx.get("anemia") and out["flag"] != "偏低":
+        lo = REF["HGB"][0]
+        out = _fmt_lab("HGB", max(65.0, lo - 6.0 - (abs(z) % 1.0) * 18.0))
+    return out
 
 
 # 复查时往参考范围走的快慢（公开常识）：血红蛋白、血小板恢复慢，白细胞、中性粒细胞比例快
@@ -1029,13 +1114,17 @@ def _vitals(stats, age):
     return base
 
 
-def proc_for(stats, strata, dx_name):
+_CHILD_ONLY_PROC_WORDS = ("鞘状突高位结扎", "疝囊高位结扎", "睾丸下降固定")
+
+
+def proc_for(stats, strata, dx_name, age=None):
     """手术可取的写法。主诊断名、code3 两层：先具体写法，再大类。0.1.6：两层都没有时再看章层、全局层，只取适应证关键词
     和诊断对得上的（family_ok）：先具体写法（按它属于的大类判），再大类。返回 (items, 来源)，来源是 key、family、key_kw、family_kw；
     都没有返回 ({}, None)。"""
     fine = [s for s in strata if s.startswith("n:") or len(s) == 3]
     coarse = [s for s in strata if s not in fine]
-    items = _table(stats, "procedures", fine)["items"]
+    proc_ok = lambda k: not (age is not None and age >= CHILD_AGE and _has_any(k, _CHILD_ONLY_PROC_WORDS))
+    items = _table_where(stats, "procedures", fine, proc_ok)
     if items:
         return items, "key"
     items = {f: n for f, n in _table(stats, "proc_family", fine)["items"].items() if f in PROC_FAMILY_NAME}
@@ -1044,7 +1133,7 @@ def proc_for(stats, strata, dx_name):
     ok = {f for f in FAMILY_DX_RE if family_ok(f, dx_name)}
     if not ok:
         return {}, None
-    items = _table_where(stats, "procedures", coarse, lambda k: proc_family(k) in ok)
+    items = _table_where(stats, "procedures", coarse, lambda k: proc_family(k) in ok and proc_ok(k))
     if items:
         return items, "key_kw"
     items = _table_where(stats, "proc_family", coarse, lambda f: f in ok and f in PROC_FAMILY_NAME)
@@ -1108,16 +1197,48 @@ def exam_target(stats, rng, strata):
 
 MAX_MEDS = 10
 CORE_MIN_SHARE = 0.6   # 主治的一类至少用到住院的几成（公开的建模选择）
+_DOSE_MG_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(mg|g|毫克|克)\s*$", re.I)
+_PED_MG_PER_KG = {
+    "pip_tazo": 112.5, "vancomycin": 20.0, "meropenem": 40.0, "imipenem": 25.0,
+    "cefoperazone_sulbactam": 80.0, "ceftriaxone": 80.0, "cefuroxime": 50.0,
+    "levofloxacin": 10.0, "azithromycin": 12.0,
+}
+_PED_EXEMPT_WORDS = ("免疫球蛋白", "丙种球蛋白", "白蛋白", "甘露醇", "葡萄糖", "氯化钠")
+
+
+def _child_dose_ok(p, did, alias, dose):
+    """14 岁以下患儿拦截成人级单次克级高剂量，防 g3 漏记抗生素超量。"""
+    if p["age"] >= CHILD_AGE or not dose:
+        return True
+    m = _DOSE_MG_RE.match(dose)
+    if not m:
+        return True
+    val, unit = float(m.group(1)), m.group(2).lower()
+    mg = val * 1000.0 if unit in ("g", "克") else val
+    w = float(p.get("weight_kg") or weight_p50(p["age"]))
+    if did in _PED_MG_PER_KG:
+        return mg <= _PED_MG_PER_KG[did] * w * 1.05
+    if p["age"] < 6 and mg >= 1000.0 and not _has_any(alias, _PED_EXEMPT_WORDS):
+        return mg <= 60.0 * w
+    return True
 
 
 def _med_entry(stats, rng, p, did, los, n_meds, cls, core):
-    """一种药：别名、剂量、频次、途径各按统计表抽，过 g3 规则；不过返回 None。"""
+    """一种药：别名、剂量、频次、途径各按统计表抽，过 g3 规则及儿童剂量防呆；不过返回 None。"""
     alias = _pick(rng, _sub(stats, "med_alias", did))
     if not alias:
         return None
     dose = _pick(rng, _sub(stats, "med_dose", did)) or ""
     freq = _pick(rng, _sub(stats, "med_freq", did)) or ""
     route = _pick(rng, _sub(stats, "med_route", did)) or ""
+    if dose and not _child_dose_ok(p, did, alias, dose):
+        alt = {d: n for d, n in _sub(stats, "med_dose", did).items()
+               if _child_dose_ok(p, did, alias, d) and med_allowed(p, alias, d, freq, route)}
+        if alt:
+            ped_rng = random.Random(seed_of(p.get("patient_id") or "", did, n_meds, "ped_dose"))
+            dose = _pick(ped_rng, alt) or ""
+        else:
+            dose = ""
     if not med_allowed(p, alias, dose, freq, route):
         return None
     chronic = is_chronic(did)
@@ -1168,11 +1289,14 @@ def plan_meds(stats, rng, p, strata, los):
     # （本章儿童层 → 全院儿童层，不退到成人层；第十次 4 岁言语发育障碍开了奥氮平）。统计表没有儿童层（0.10 以前）时不过滤
     dxt = "；".join([p["primary_dx"]["name"]] + [c["name"] for c in p.get("comorbidities") or []] + list(p.get("past_history") or []))
     code = p["primary_dx"].get("code3") or ""
+    late_preg = bool(p.get("pregnant") and ((p.get("gest_weeks") or 0) >= 20 or _has_any(dxt, _OBSTETRIC_WORDS)))
     kid_ok = None
     if p["age"] < CHILD_AGE:
         kid_ok = next((set(_sub(stats, "meds", s)) for s in child_layers(strata) if _sub(stats, "meds", s)), None)
 
     def usable(did, core):
+        if late_preg and (did in ("mifepristone", "misoprostol", "ethacridine") or any(_has_any(a, _ABORTIFACIENT_WORDS) for a in _sub(stats, "med_alias", did))):
+            return False
         return (kid_ok is None or did in kid_ok) and (core or indicated(did, dxt, code))
 
     if not t_cls["items"]:
@@ -1263,12 +1387,20 @@ def plan_journey(stats, rng, jid, slot=None):
     code = p["primary_dx"]["code3"]
     name = p["primary_dx"]["name"]
     strata = strata_of(name, code)
+    tkind_pre = treatment_kind(name, code)
+    kb_data = stats.get("_kb")
+    kb_ent = kb.match_kb(kb_data, code, name, tkind=tkind_pre, age=p["age"]) if kb_data else None
+    kb_rng = random.Random(seed_of(jid, "kb_v03")) if kb_ent else None
     if slot:
         los, surgical, sd = int(slot["los"]), bool(slot.get("surgical")), slot.get("surgery_day")
     else:
         los = int(_pick(rng, _table(stats, "los", strata)["items"]) or 7)
         s = _table(stats, "surgery", strata)["items"]
         surgical = rng.random() < s.get("yes", 0) / max(1, s.get("yes", 0) + s.get("no", 0))
+        if kb_ent and kb_ent.get("surgical") is False:
+            has_c3_surg = bool((((stats.get("surgery") or {}).get(code) or {}).get("items") or {}).get("yes"))
+            if not has_c3_surg:
+                surgical = False
         sd = None
     los = max(1, los)
     procedures, do_day = [], None
@@ -1276,8 +1408,10 @@ def plan_journey(stats, rng, jid, slot=None):
     if surgical and slot and slot.get("procedure"):
         pkey, psource = slot["procedure"], "slot"
     else:
-        pkey, psource = proc_for(stats, strata, name) if surgical else (None, None)
+        pkey, psource = proc_for(stats, strata, name, age=p["age"]) if surgical else (None, None)
         pkey = _pick(rng, pkey) if pkey else None
+        if surgical and pkey is None and kb_ent and kb_ent.get("surgical") and kb_ent.get("procedure"):
+            pkey, psource = kb_ent["procedure"], "pathway"
     if surgical and pkey is None:
         # 配对模式也不做：0.1.3 在这里把诊断名拼上"手术治疗"当术式
         surgical = False
@@ -1374,7 +1508,40 @@ def plan_journey(stats, rng, jid, slot=None):
             exams.append(_exam(stats, rng, i, add[0], add[1], los, ctx=lctx))
             exams[-1]["guaranteed"] = True
             i += 1
+    if kb_ent and kb_ent.get("exams_required"):
+        # 0.30：融入路线 B 必查清单中缺失的核心非有创项目（最多 3 项，独立 kb_rng）
+        added_kb = 0
+        have_keys = {e["key"] for e in exams}
+        fine0 = (fine_strata(strata) or ["*"])[0]
+        for kex in kb_ent["exams_required"]:
+            if added_kb >= 3:
+                break
+            kk, kr = kex["key"], kex.get("region") or ""
+            if kk in have_keys or KIND_OF.get(kk, "其他") in INVASIVE:
+                continue
+            if not invasive_ok(f"{kk}|{kr}", fine0):
+                continue
+            exams.append(_exam(stats, kb_rng, i, kk, kr, los, ctx=lctx))
+            exams[-1]["kb_required"] = True
+            have_keys.add(kk)
+            added_kb += 1
+            i += 1
     exams = dedupe_bare(exams, organs)
+    if fname and organs and not tkind and not any(
+        not e["items"] and diag_eligible(e["key"]) and e["kind"] in ("造影", "内镜", "影像") and site_ok(e["key"], e["region"], organs)
+        for e in exams
+    ):
+        dk, dr = (
+            ("心脏超声", "") if "心" in organs else
+            ("CT", "头") if "脑" in organs else
+            ("CT", "胸") if "肺" in organs else
+            next((("超声" if o in ("腹", "泌尿", "盆", "颈", "乳腺") else "CT", BARE_REGION[o])
+                  for o in ORGAN_ORDER if o in organs and o in BARE_REGION), (None, None))
+        )
+        if dk and (dk, dr or None) not in {(e["key"], e["region"]) for e in exams}:
+            diag_rng = random.Random(seed_of(jid, "diag_img_v032"))
+            exams.append(_exam(stats, diag_rng, i, dk, dr, los, ctx=lctx))
+            i += 1
     # 0.1.11（第十次 M1）：手术表里有的操作，检查表里同名的那项并进手术：开单在决定手术那天，结果在手术之后才有
     # （0.1.10 入院记录辅助检查写"冠脉造影：未见明显异常"，当天 18 时才做冠脉造影术）。手术当天出院的，结果在出院记录；
     # 入院当天做、当天出院的，检查删掉，只留手术
@@ -1405,6 +1572,13 @@ def plan_journey(stats, rng, jid, slot=None):
         exams.append({"id": f"e{i}", "key": "病理", "region": None, "name": "术后病理", "kind": "病理", "order_day": do_day, "result_day": min(los, do_day + rng.randint(2, 5)), "items": []})
         i += 1
     mark_exam_findings(stats, strata, exams, under if tkind else finding_label(name, code), organs)
+    if surgical and do_day is not None:
+        for e in exams:
+            if (e.get("diagnostic") and e["kind"] == "影像" and not e.get("with_proc")
+                    and not any(proc_has_exam(a["name"], e["key"]) for a in procedures)
+                    and e["result_day"] > do_day):
+                e["result_day"] = do_day
+                e["order_day"] = min(e["order_day"], do_day)
     # 0.1.11（第十次合成病历 11）：阳性的培养至少在出院前一天回报（0.1.10 出院当天才回报"培养出致病菌"，照常出院）
     for e in exams:
         if e["kind"] == "培养" and e.get("abnormal") and los >= 1 and e["result_day"] >= los:
@@ -1451,9 +1625,9 @@ def plan_journey(stats, rng, jid, slot=None):
     # 0.1.9：伴随症状、主诉症状表都只到节层（0.1.8 退到章层，痔抽到"胸闷""头晕"）
     fs = fine_strata(strata)
     t_sym = _table(stats, "symptoms", fs)
-    syms = sorted(t_sym["items"].items())
+    syms = [(s, n) for s, n in sorted(t_sym["items"].items()) if sym_ok(s, p)]
     drawn = [s for s, n in syms if rng.random() < n / max(1, t_sym["n"])]
-    cc_layer = next((s for s in fs if ((stats.get("chief_symptoms") or {}).get(s) or {}).get("items")), None)
+    cc_layer = next((s for s in fs if any(sym_ok(x, p) for x in (((stats.get("chief_symptoms") or {}).get(s) or {}).get("items") or {}))), None)
     chief, extra = [], {}
     if tkind:
         # 化疗、放疗、复查：主诉写这次来做什么，不写症状
@@ -1462,7 +1636,7 @@ def plan_journey(stats, rng, jid, slot=None):
         source = "treatment"
     else:
         # 0.1.8：主诉从主诉症状表按出现频率抽 1–2 个；伴随症状按频率排在后面，一共不超过 5 个
-        cc_pool = dict(stats["chief_symptoms"][cc_layer]["items"]) if cc_layer else {}
+        cc_pool = {x: n for x, n in stats["chief_symptoms"][cc_layer]["items"].items() if sym_ok(x, p)} if cc_layer else {}
         for _ in range(1 if rng.random() < 0.5 else 2):
             x = _pick(rng, cc_pool)
             if x is None:
@@ -1476,7 +1650,7 @@ def plan_journey(stats, rng, jid, slot=None):
             # 0.1.9.1（第九次 S1-A：level_chief_none 49/500 写"不适"）：章的器官系统和诊断的器官系统一致时（呼吸章的病、消化章的病），
             # 可以用章层的主诉表；不一致（循环系统章里的痔、脑梗死）照旧不用。器官都从 ICD-10 的分类结构推，不按病名写规则
             ch = (code or "")[:1]
-            ch_tab = ((stats.get("chief_symptoms") or {}).get(ch) or {}).get("items") or {}
+            ch_tab = {x: n for x, n in ((((stats.get("chief_symptoms") or {}).get(ch) or {}).get("items") or {}).items()) if sym_ok(x, p)}
             if ch_tab and CHAPTER_ORGAN.get(ch) and CHAPTER_ORGAN[ch] in organs:
                 chief, source = [_pick(rng, ch_tab)], "chapter_organ"
             else:
@@ -1486,22 +1660,64 @@ def plan_journey(stats, rng, jid, slot=None):
                 # 0.1.12（第十一次"不适"49 份：N13 章层表空 36、I84 章层器官对不上 13）：再退一层"器官合并层"，按诊断所在的器官系统
                 # 把各章的住院合起来建主诉表（stats 0.11 的 org:器官，k 照压），器官照旧从 ICD-10 结构推。数据驱动，不按病名写症状
                 for o in sorted(organs, key=lambda x: ORGAN_ORDER.index(x) if x in ORGAN_ORDER else len(ORGAN_ORDER)):
-                    o_tab = ((stats.get("chief_symptoms") or {}).get(f"org:{o}") or {}).get("items") or {}
+                    o_tab = {x: n for x, n in ((((stats.get("chief_symptoms") or {}).get(f"org:{o}") or {}).get("items") or {}).items()) if sym_ok(x, p)}
                     if o_tab:
                         chief, source = [_pick(rng, o_tab)], "organ"
                         extra["organ"] = o
                         break
                 else:
                     extra["organ_reason"] = "no_organ" if not organs else "organ_table_empty"
+        if kb_ent and source in ("organ", "none") and kb_ent.get("chief_symptoms"):
+            kb_cands = [x for x in kb_ent["chief_symptoms"] if sym_ok(x, p)]
+            if kb_cands:
+                pick_n = min(len(kb_cands), 2 if kb_rng.random() < 0.45 else 1)
+                chief = kb_rng.sample(kb_cands, pick_n)
+                source = "pathway"
         if not chief:
             # 不按病名补症状（不写病种规则），照 0.1.8 写"不适"，plan_diag 计 level_chief_none 看有多少
             chief, source = ["不适"], "none"
         dur = None
+    if tkind:
+        cc_cat = "scheduled"
+    elif p.get("pregnant") or any(x in NON_EVOLVING_SYMS or x in ("见红", "破水", "胎动", "胎动减少") for x in chief):
+        cc_cat = "obstetric"
+    elif _has_any("".join(chief), _LESION_WORDS):
+        cc_cat = "lesion"
+    else:
+        cc_cat = "acute"
+    extra["category"] = cc_cat
     freq = t_sym["items"]
     rest = sorted((s for s in drawn if s not in chief), key=lambda s: (-freq.get(s, 0), s))
     chosen = (chief + rest)[:5] if not tkind else rest[:3]
+    # 0.21.3：主诉+伴随症状不足 3 项时，用独立子随机数按频次权重不放回补齐至随机 2-4 项（不动主 rng 序列）
+    if not tkind and len(chosen) < 3 and len(syms) >= 4:
+        pool_sym = {s: n for s, n in syms if s not in chosen}
+        if pool_sym:
+            sym_rng = random.Random(seed_of(jid, "sym_topup"))
+            want_n = sym_rng.randint(2, 4)
+            while len(chosen) < want_n and pool_sym:
+                pick_s = _pick(sym_rng, pool_sym)
+                del pool_sym[pick_s]
+                chosen.append(pick_s)
     if dur is None:
         dur = _pick(rng, _table_where(stats, "durations", strata, lambda x: duration_ok(x, p["age"]))) or f"{rng.randint(1, 9)}天"
+
+    def _ob_acute_dur(d_txt, words):
+        m_w = _DUR.search(d_txt or "")
+        if m_w and (m_w.group(2) in ("年", "月") or (m_w.group(2) == "周" and int(m_w.group(1)) >= 2)):
+            ob_rng = random.Random(seed_of(jid, "ob_other_dur"))
+            return f"{ob_rng.randint(2, 12)}小时" if _has_any("".join(words), ("阴道流液", "破水", "见红", "腹痛")) else f"{ob_rng.randint(1, 3)}天"
+        return d_txt
+
+    if not tkind and p.get("pregnant") and p.get("gest_weeks"):
+        if "停经" in chief:
+            if chief == ["停经"]:
+                dur = f"{p['gest_weeks']}周"
+            else:
+                others = [s for s in chief if s != "停经"]
+                extra["text"] = f"停经{p['gest_weeks']}周，{'、'.join(others)}{_ob_acute_dur(dur, others)}"
+        elif _has_any("".join(chief), ("阴道流液", "破水", "见红", "胎动减少")):
+            dur = _ob_acute_dur(dur, chief)
     v0 = _vitals(stats, p["age"])
     cur = {k: qdraw(rng, q) for k, q in v0.items()}
     # 夹的范围：成人照 0.1.8；14 岁以下按年龄范围放宽一点（0.1.9）
@@ -1509,13 +1725,14 @@ def plan_journey(stats, rng, jid, slot=None):
     clamp = {"SBP": (85, 185), "DBP": (48, 110), "P": (48, 150), "R": (12, 40)}
     if cr:
         clamp = {k: (lo - 8, hi + 15) for k, (lo, hi) in cr.items()}
-    daily, today = [], list(chosen)
+    # 0.30：非演进主诉词（停经/妊娠/待产）不进入每日演进症状列表，杜绝“停经已消失”；实体肿物/疝术前不消退、术后消退
+    daily, today = [], [s for s in chosen if s not in NON_EVOLVING_SYMS]
     has_sc = bool(stats.get("symptom_course"))
     for day in range(los + 1):
         # 症状逐日减少：有 S2 symptom_course 表时按分层留存概率演变，表空回退旧 0.75 逻辑
         if day:
             if not has_sc:
-                today = today[:1] + [s for s in today[1:] if rng.random() < 0.75]
+                base_next = today[:1] + [s for s in today[1:] if rng.random() < 0.75]
             else:
                 nxt = []
                 for idx_s, s in enumerate(today):
@@ -1523,7 +1740,13 @@ def plan_journey(stats, rng, jid, slot=None):
                         nxt.append(s)
                     elif rng.random() < symptom_keep_prob(stats, strata, s, s in chief, day, los):
                         nxt.append(s)
-                today = nxt
+                base_next = nxt
+            if cc_cat == "lesion":
+                resected = surgical and do_day is not None and day > do_day
+                keep_lesions = [s for s in today if _has_any(s, _LESION_WORDS) and not resected]
+                today = keep_lesions + [s for s in base_next if s not in keep_lesions and not (resected and _has_any(s, _LESION_WORDS))]
+            else:
+                today = base_next
         if day:
             for k, sd_ in (("T", 0.2), ("P", 4), ("R", 1), ("SBP", 5), ("DBP", 3)):
                 cur[k] = cur[k] + rng.gauss(0, sd_)
@@ -1539,6 +1762,14 @@ def plan_journey(stats, rng, jid, slot=None):
     j = {"journey_id": jid, "contract": CONTRACT_VERSION, "patient": p, "admit_date": fictional_date(jid), "los": los, "surgical": surgical, "surgery_day": do_day,
          "chief": dict({"symptoms": chief, "duration": dur, "source": source}, **extra), "exams": exams, "meds": meds, "procedures": procedures,
          "dx_events": dx_events, "differentials": differentials, "daily": daily, "exam_target": target, "exam_diag": exam_diag}
+    if kb_ent:
+        j["kb_facts"] = {
+            "icd10": kb_ent["icd10"],
+            "pathway": kb_ent["pathway"],
+            "signs": list(kb_ent.get("signs") or ()),
+            "postop_watch": list(kb_ent.get("postop_watch") or ()),
+            "discharge_criteria": list(kb_ent.get("discharge_criteria") or ()),
+        }
     return j
 
 

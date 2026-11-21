@@ -1,0 +1,1832 @@
+{
+  "version": "kb-v2.2-clean",
+  "n_pathways": 17,
+  "entries": {
+    "C18_chemo": {
+      "icd10": "C18_chemo",
+      "code3": "C18",
+      "pathway": "结肠癌术后辅助化疗",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 10,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "便血",
+        "排便习惯改变",
+        "腹痛",
+        "贫血",
+        "腹部肿块"
+      ],
+      "signs": [
+        "全身浅表淋巴结肿大",
+        "触及肿块",
+        "叩及鼓音",
+        "听到高调肠鸣音或金属音"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "粪便常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "生化全套"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "肠镜",
+          "region": "",
+          "name": "结肠镜检查和/或钡剂灌肠造影"
+        },
+        {
+          "key": "超声",
+          "region": "",
+          "name": "彩超检查"
+        },
+        {
+          "key": "CT",
+          "region": "",
+          "name": "CT/MRI"
+        },
+        {
+          "key": "CT",
+          "region": "腹",
+          "name": "胸片正侧位、胸部CT、腹部超声或CT、全身骨扫描、头颅MRI"
+        },
+        {
+          "key": "PET",
+          "region": "",
+          "name": "PET–CT"
+        },
+        {
+          "key": "肿瘤标志物",
+          "region": "",
+          "name": "肿瘤标志物"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "化疗结束，无明显副反应",
+        "没有需要住院处理的并发症"
+      ]
+    },
+    "E11": {
+      "icd10": "E11",
+      "code3": "E11",
+      "pathway": "2型糖尿病",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 18,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "烦渴",
+        "多饮",
+        "多尿",
+        "体重下降"
+      ],
+      "signs": [
+        "微血管瘤",
+        "视网膜内出血",
+        "硬性渗出",
+        "棉绒斑",
+        "视网膜内微血管异常",
+        "静脉串珠",
+        "新生血管",
+        "玻璃体积血",
+        "视网膜前出血",
+        "纤维增生",
+        "神经病变",
+        "踝反射异常",
+        "针刺痛觉异常",
+        "振动觉异常",
+        "压力觉异常"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规（包括酮体）"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "大便常规"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "全天毛细血管血糖谱"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "血脂",
+          "region": "",
+          "name": "血脂分析"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "糖化血红蛋白",
+          "region": "",
+          "name": "糖化血红蛋白（HbA1c）"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸片"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "超声",
+          "region": "腹",
+          "name": "腹部彩超"
+        },
+        {
+          "key": "超声",
+          "region": "颈",
+          "name": "颈动脉、肾动脉和下肢血管彩超"
+        },
+        {
+          "key": "动态血压",
+          "region": "",
+          "name": "动态血糖、血压监测"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "动态血压",
+          "region": "",
+          "name": "24h动态血压监测"
+        },
+        {
+          "key": "动态心电图",
+          "region": "",
+          "name": "24小时动态心电图"
+        },
+        {
+          "key": "肌电图",
+          "region": "",
+          "name": "肌电图检查"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "患者得到基本技能培训并学会自我血糖监测",
+        "降糖治疗方案确定，血糖控制达标或血糖趋于稳定，无低血糖事件",
+        "降压治疗方案确定，血压控制达标或血压趋于稳定",
+        "完成糖尿病伴并发症相关检查并开始对症治疗",
+        "没有需要住院处理的其他并发症和/或合并症"
+      ]
+    },
+    "I20.0": {
+      "icd10": "I20.0",
+      "code3": "I20",
+      "pathway": "不稳定型心绞痛介入治疗",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 7,
+      "surgical": true,
+      "procedure": "冠状动脉造影（必要时冠状动脉内影像或生理评估）+支架置入术或药物球囊等处理",
+      "chief_symptoms": [
+        "长时间静息性心绞痛",
+        "新发心绞痛",
+        "自发性心绞痛",
+        "劳力型心绞痛"
+      ],
+      "signs": [],
+      "exams_required": [
+        {
+          "key": "肌钙蛋白",
+          "region": "",
+          "name": "血清心肌损伤标记物包括肌酸激酶同工酶、高敏肌钙蛋白（hs-c"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图，常规12导联心电图，必要时18导联心电图"
+        },
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规、尿常规、大便常规+隐血、肝功能、肾功能、电解质、血糖"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "心脏超声",
+          "region": "",
+          "name": "胸部影像学检查、超声心动图"
+        },
+        {
+          "key": "D二聚体",
+          "region": "",
+          "name": "D-二聚体"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        },
+        {
+          "key": "利钠肽",
+          "region": "",
+          "name": "脑钠肽"
+        },
+        {
+          "key": "血沉",
+          "region": "",
+          "name": "红细胞沉降率"
+        },
+        {
+          "key": "C反应蛋白",
+          "region": "",
+          "name": "C反应蛋白"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [
+        "心肌缺血等不适症状",
+        "穿刺部位情况",
+        "心电图变化",
+        "血红蛋白水平及心肌损伤标志物变化"
+      ],
+      "discharge_criteria": [
+        "生命体征平稳",
+        "血流动力学稳定",
+        "心肌缺血症状得到有效控制",
+        "无其他需要继续住院的并发症"
+      ]
+    },
+    "I21": {
+      "icd10": "I21",
+      "code3": "I21",
+      "pathway": "急性ST段抬高心肌梗死",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 10,
+      "surgical": true,
+      "procedure": "直接PCI",
+      "chief_symptoms": [
+        "心前区疼痛",
+        "恶心",
+        "呕吐",
+        "大汗",
+        "呼吸困难"
+      ],
+      "signs": [
+        "胸骨后或心前区剧烈的压榨性疼痛",
+        "恶心、呕吐、大汗和呼吸困难"
+      ],
+      "exams_required": [
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电"
+        },
+        {
+          "key": "动态血压",
+          "region": "",
+          "name": "血压"
+        },
+        {
+          "key": "肌钙蛋白",
+          "region": "",
+          "name": "血清心肌损伤标志物"
+        },
+        {
+          "key": "利钠肽",
+          "region": "",
+          "name": "心力衰竭的生化标志物"
+        },
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "大便常规+隐血"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        },
+        {
+          "key": "血脂",
+          "region": "",
+          "name": "血脂"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "甲状腺功能",
+          "region": "",
+          "name": "甲状腺功能"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        },
+        {
+          "key": "D二聚体",
+          "region": "",
+          "name": "D-二聚体"
+        },
+        {
+          "key": "血沉",
+          "region": "",
+          "name": "红细胞沉降率"
+        },
+        {
+          "key": "C反应蛋白",
+          "region": "",
+          "name": "C反应蛋白或高敏C反应蛋白"
+        },
+        {
+          "key": "超声",
+          "region": "心",
+          "name": "负荷超声心动图"
+        }
+      ],
+      "exams_optional": [],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [
+        "心电图（动态观察）",
+        "心肌损伤标志物（动态监测）"
+      ],
+      "discharge_criteria": [
+        "生命体征平稳",
+        "心电稳定",
+        "心功能稳定",
+        "心肌缺血症状得到有效控制"
+      ]
+    },
+    "I25": {
+      "icd10": "I25",
+      "code3": "I25",
+      "pathway": "冠状动脉粥样硬化",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 4,
+      "surgical": true,
+      "procedure": "冠状动脉造影",
+      "chief_symptoms": [],
+      "signs": [],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "便常规+隐血"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "血脂",
+          "region": "",
+          "name": "血脂"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "CT",
+          "region": "",
+          "name": "冠状动脉CT造影"
+        },
+        {
+          "key": "心脏超声",
+          "region": "",
+          "name": "彩色多普勒超声心动图检查"
+        },
+        {
+          "key": "动态心电图",
+          "region": "",
+          "name": "24小时动态心电图"
+        },
+        {
+          "key": "动态血压",
+          "region": "",
+          "name": "24小时动态血压"
+        },
+        {
+          "key": "冠脉造影",
+          "region": "",
+          "name": "冠状动脉造影"
+        },
+        {
+          "key": "肌钙蛋白",
+          "region": "",
+          "name": "心肌损伤标志物"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸部X线片"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "超声",
+          "region": "心",
+          "name": "负荷超声心动图"
+        },
+        {
+          "key": "D二聚体",
+          "region": "",
+          "name": "D-二聚体"
+        },
+        {
+          "key": "利钠肽",
+          "region": "",
+          "name": "脑钠肽"
+        }
+      ],
+      "postop_incision": true,
+      "postop_drain": false,
+      "postop_watch": [
+        "穿刺部位出血",
+        "渗血征象",
+        "心电图",
+        "生命体征"
+      ],
+      "discharge_criteria": [
+        "没有需要住院处理的并发症和/或合并症",
+        "向患者及家属交代出院后注意事项，预约复诊时间",
+        "低盐低脂饮食、适当运动、改善生活方式（戒烟）",
+        "控制高血压、高血脂、糖尿病等危险因素",
+        "出院带药（根据情况）：他汀类药物、抗血小板药物等",
+        "定期复查"
+      ]
+    },
+    "I50": {
+      "icd10": "I50",
+      "code3": "I50",
+      "pathway": "心力衰竭",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 14,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "气短",
+        "乏力",
+        "夜间咳嗽",
+        "劳力性呼吸困难",
+        "夜间阵发性呼吸困难",
+        "踝部水肿"
+      ],
+      "signs": [
+        "颈静脉怒张",
+        "肺部啰音",
+        "第三心音奔马律",
+        "肝颈静脉反流征阳性",
+        "双下肢水肿"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        },
+        {
+          "key": "血脂",
+          "region": "",
+          "name": "血脂"
+        },
+        {
+          "key": "糖化血红蛋白",
+          "region": "",
+          "name": "糖化血红蛋白"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "C反应蛋白",
+          "region": "",
+          "name": "CRP"
+        },
+        {
+          "key": "利钠肽",
+          "region": "",
+          "name": "NT-proBNP/BNP"
+        },
+        {
+          "key": "肌钙蛋白",
+          "region": "",
+          "name": "肌钙蛋白T/I"
+        },
+        {
+          "key": "心肌酶",
+          "region": "",
+          "name": "心肌酶谱"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "动脉血气分析"
+        },
+        {
+          "key": "甲状腺功能",
+          "region": "",
+          "name": "甲功三项"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸片"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "动态心电图",
+          "region": "",
+          "name": "动态心电图"
+        },
+        {
+          "key": "动态血压",
+          "region": "",
+          "name": "动态血压"
+        },
+        {
+          "key": "心脏超声",
+          "region": "",
+          "name": "心脏超声"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "冠脉造影",
+          "region": "",
+          "name": "冠脉CT或造影"
+        },
+        {
+          "key": "磁共振",
+          "region": "心",
+          "name": "心脏核磁"
+        },
+        {
+          "key": "心脏超声",
+          "region": "",
+          "name": "心脏彩超"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "症状缓解，无典型心力衰竭症状和体征",
+        "生命体征稳定",
+        "胸片显示肺水肿、肺淤血征象明显改善或正常",
+        "恶性心律失常得以控制",
+        "停用静脉用药",
+        "原发病得到有效控制"
+      ]
+    },
+    "I63": {
+      "icd10": "I63",
+      "code3": "I63",
+      "pathway": "脑梗死",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 14,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "体征",
+        "意识障碍"
+      ],
+      "signs": [
+        "出现局灶症状和体征"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "CT",
+          "region": "头",
+          "name": "头颅CT"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸片"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "血脂",
+          "region": "",
+          "name": "血脂"
+        },
+        {
+          "key": "磁共振",
+          "region": "头",
+          "name": "头颅MRI"
+        }
+      ],
+      "exams_optional": [],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "病情稳定",
+        "没有需要住院治疗的并发症"
+      ]
+    },
+    "I84": {
+      "icd10": "I84",
+      "code3": "I84",
+      "pathway": "血栓性外痔",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 3,
+      "surgical": true,
+      "procedure": "血栓性外痔切除术",
+      "chief_symptoms": [
+        "肛门局部剧痛"
+      ],
+      "signs": [
+        "肛门局部剧痛",
+        "肛门直肠指检"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "X线胸片"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "肠镜",
+          "region": "",
+          "name": "直肠、乙状结肠硬镜或纤维肠镜检查"
+        }
+      ],
+      "postop_incision": true,
+      "postop_drain": true,
+      "postop_watch": [
+        "切口情况",
+        "排便情况",
+        "有无便血",
+        "创面渗血",
+        "水肿"
+      ],
+      "discharge_criteria": [
+        "患者一般情况良好，正常饮食，排便顺畅，无明显排便时肛门疼痛",
+        "各项实验室检查结果正常，体温正常",
+        "肛门部创面无异常分泌物，引流通畅，无明显水肿、出血"
+      ]
+    },
+    "J15": {
+      "icd10": "J15",
+      "code3": "J15",
+      "pathway": "社区获得性肺炎",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 14,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "咳嗽",
+        "发热"
+      ],
+      "signs": [
+        "肺实变体征",
+        "湿性啰音"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "大便常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "血沉",
+          "region": "",
+          "name": "血沉"
+        },
+        {
+          "key": "C反应蛋白",
+          "region": "",
+          "name": "C反应蛋白"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸部正侧位片"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "痰培养",
+          "region": "",
+          "name": "呼吸道分泌物或血病原学检查及药敏"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        },
+        {
+          "key": "CT",
+          "region": "胸",
+          "name": "胸部CT"
+        },
+        {
+          "key": "血培养",
+          "region": "",
+          "name": "血培养"
+        },
+        {
+          "key": "超声",
+          "region": "",
+          "name": "B超"
+        },
+        {
+          "key": "D二聚体",
+          "region": "",
+          "name": "D-二聚体"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "支气管镜",
+          "region": "",
+          "name": "支气管镜"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "症状好转，体温正常超过72小时",
+        "影像学提示肺部病灶明显吸收"
+      ]
+    },
+    "J18.0": {
+      "icd10": "J18.0",
+      "code3": "J18",
+      "pathway": "支气管肺炎（儿科）",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 14,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "发热",
+        "烦躁不安",
+        "精神萎靡"
+      ],
+      "signs": [
+        "鼻翼扇动",
+        "口周和指（趾）端发绀",
+        "三凹征",
+        "双肺可闻及固定性细湿啰音"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "C反应蛋白",
+          "region": "",
+          "name": "CRP"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "大便常规"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸X线片"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析检查"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图检查"
+        },
+        {
+          "key": "超声",
+          "region": "",
+          "name": "超声检查"
+        },
+        {
+          "key": "肺功能",
+          "region": "",
+          "name": "肺功能检查"
+        },
+        {
+          "key": "CT",
+          "region": "胸",
+          "name": "肺CT"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        },
+        {
+          "key": "CT",
+          "region": "胸",
+          "name": "胸部CT"
+        },
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "复查血常规、尿常规、大便常规"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "咳嗽明显减轻",
+        "连续3天腋温<37.5℃",
+        "肺部体征改善",
+        "胸X线片示炎症明显吸收"
+      ]
+    },
+    "J21": {
+      "icd10": "J21",
+      "code3": "J21",
+      "pathway": "毛细支气管炎（儿科）",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 10,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "喘憋",
+        "低热",
+        "流涕",
+        "鼻塞",
+        "咳嗽",
+        "烦躁不安"
+      ],
+      "signs": [
+        "胸廓饱满",
+        "哮鸣音",
+        "细湿啰音"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规与CRP、尿常规、大便常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "心肌酶谱、肝肾功能及电解质"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图检查"
+        },
+        {
+          "key": "心脏超声",
+          "region": "",
+          "name": "超声心动图"
+        },
+        {
+          "key": "血培养",
+          "region": "",
+          "name": "血支原体、衣原体及其他呼吸道常见相关病原"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析检测"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析检测或经皮血氧饱和度监测"
+        },
+        {
+          "key": "肺功能",
+          "region": "",
+          "name": "肺功能检查"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "血培养",
+          "region": "",
+          "name": "肺炎支原体、衣原体抗体"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "喘息消失，咳嗽明显减轻",
+        "连续3天腋温<37.3℃",
+        "肺部体征明显改善"
+      ]
+    },
+    "K56": {
+      "icd10": "K56",
+      "code3": "K56",
+      "pathway": "肠梗阻",
+      "version": "2009-2017县级版",
+      "issuer": "国家卫生健康委（中华医学会网站转载）",
+      "los_max": 12,
+      "surgical": true,
+      "procedure": "肠粘连松解术、小肠部分切除吻合术、肠短路吻合术、肠外置术、结肠造口术",
+      "chief_symptoms": [
+        "腹痛",
+        "腹胀",
+        "呕吐",
+        "肛门停止排气排便"
+      ],
+      "signs": [
+        "腹胀",
+        "肠型",
+        "蠕动波",
+        "压痛",
+        "鼓音",
+        "肠鸣音活跃",
+        "气过水声",
+        "高调金属音",
+        "振水音"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血、尿常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝功能、肾功能、电解质、凝血功能（ D-二聚体）"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸部正位片"
+        },
+        {
+          "key": "X线",
+          "region": "腹",
+          "name": "腹部立卧位片"
+        },
+        {
+          "key": "超声",
+          "region": "腹",
+          "name": "腹部超声（肝，胆，胰，脾，双肾+输尿管）"
+        },
+        {
+          "key": "CT",
+          "region": "腹",
+          "name": "腹盆腔CT平扫"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "肿瘤标志物",
+          "region": "",
+          "name": "消化系统肿瘤标志物检查（CEA,AFP,CA199,CA12"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "动脉血气分析等"
+        },
+        {
+          "key": "肠镜",
+          "region": "",
+          "name": "纤维结肠镜检查（急诊或灌肠后）"
+        },
+        {
+          "key": "CT",
+          "region": "腹",
+          "name": "腹盆腔增强CT,以及肠系膜上血管（SMA,SMV）CTA等"
+        },
+        {
+          "key": "心脏超声",
+          "region": "",
+          "name": "心超，动态心电图，肺功能"
+        },
+        {
+          "key": "CT",
+          "region": "心",
+          "name": "非必需检查，如心超，肺功能+血气分析，动态心电图，腹盆腔增强"
+        }
+      ],
+      "postop_incision": true,
+      "postop_drain": true,
+      "postop_watch": [
+        "生命体征",
+        "腹部体征",
+        "腹腔引流情况",
+        "切口愈合情况",
+        "胃肠功能恢复情况",
+        "肛门或造瘘口排气排便情况"
+      ],
+      "discharge_criteria": [
+        "患者一般情况良好，体温正常，恢复饮食，肛门排气排便正常",
+        "腹部无阳性体征，相关实验室检查结果基本正常，没有必须住院处理",
+        "引流管拔除，切口愈合良好，伤口无感染",
+        "缝线已拆（必要时可出院后门诊拆线）"
+      ]
+    },
+    "K80.0_acute": {
+      "icd10": "K80.0_acute",
+      "code3": "K80",
+      "pathway": "胆囊结石合并急性胆囊炎",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 7,
+      "surgical": true,
+      "procedure": "开腹胆囊切除术",
+      "chief_symptoms": [
+        "胆绞痛",
+        "上腹部隐痛",
+        "发热",
+        "黄疸"
+      ],
+      "signs": [
+        "胆囊区压痛",
+        "墨菲征阳性"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "大便常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "超声",
+          "region": "腹",
+          "name": "腹部超声"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸部X线平片"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        },
+        {
+          "key": "肺功能",
+          "region": "",
+          "name": "肺功能测定"
+        },
+        {
+          "key": "超声",
+          "region": "心",
+          "name": "超声心动图"
+        },
+        {
+          "key": "MRCP",
+          "region": "",
+          "name": "MRCP"
+        },
+        {
+          "key": "CT",
+          "region": "腹",
+          "name": "腹部CT"
+        }
+      ],
+      "postop_incision": true,
+      "postop_drain": true,
+      "postop_watch": [
+        "切口愈合情况",
+        "有无胆漏、出血等并发症",
+        "引流量和性状",
+        "伤口感染情况"
+      ],
+      "discharge_criteria": [
+        "一般状况好，体温正常，无明显腹痛",
+        "恢复肛门排气排便，可进半流质饮食",
+        "实验室检查基本正常",
+        "切口愈合良好：引流管拔除，伤口无感染，无皮下积液（或门诊可处"
+      ]
+    },
+    "K80.1_chronic": {
+      "icd10": "K80.1_chronic",
+      "code3": "K80",
+      "pathway": "慢性胆囊炎",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 5,
+      "surgical": true,
+      "procedure": "腹腔镜胆囊切除术",
+      "chief_symptoms": [
+        "右上腹持续性隐痛或胀痛",
+        "胃灼热",
+        "嗳气",
+        "反酸",
+        "腹胀",
+        "恶心"
+      ],
+      "signs": [
+        "胆囊点的压痛或叩击痛"
+      ],
+      "exams_required": [
+        {
+          "key": "超声",
+          "region": "腹",
+          "name": "腹部超声"
+        },
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "MRCP",
+          "region": "",
+          "name": "MRCP"
+        },
+        {
+          "key": "CT",
+          "region": "腹",
+          "name": "上腹部CT"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        },
+        {
+          "key": "肺功能",
+          "region": "",
+          "name": "肺功能"
+        },
+        {
+          "key": "超声",
+          "region": "心",
+          "name": "超声心动图检查"
+        }
+      ],
+      "postop_incision": true,
+      "postop_drain": true,
+      "postop_watch": [
+        "生命体征",
+        "腹部体征",
+        "伤口敷料",
+        "引流管情况",
+        "尿量",
+        "腹部体征"
+      ],
+      "discharge_criteria": [
+        "一般状况好，体温正常，无明显腹痛",
+        "进饮食无不适，可以自由活动，无明显腹部体征",
+        "实验室检查基本正常",
+        "切口愈合良好：引流管拔除，伤口无感染，无皮下积液（或门诊可处"
+      ]
+    },
+    "K85": {
+      "icd10": "K85",
+      "code3": "K85",
+      "pathway": "轻症急性胰腺炎",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 10,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [
+        "腹痛"
+      ],
+      "signs": [
+        "急性、持续性腹痛（偶无腹痛）"
+      ],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "血脂",
+          "region": "",
+          "name": "甘油三酯"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        },
+        {
+          "key": "淀粉酶",
+          "region": "",
+          "name": "血淀粉酶"
+        },
+        {
+          "key": "C反应蛋白",
+          "region": "",
+          "name": "C-反应蛋白（CRP）"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "血气",
+          "region": "",
+          "name": "血气分析"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "超声",
+          "region": "腹",
+          "name": "腹部超声"
+        },
+        {
+          "key": "CT",
+          "region": "腹",
+          "name": "腹部及胸部X线片或CT检查"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "CT",
+          "region": "腹",
+          "name": "腹部CT"
+        },
+        {
+          "key": "磁共振",
+          "region": "腹",
+          "name": "核磁共振胰胆管造影（MRCP）"
+        },
+        {
+          "key": "ERCP",
+          "region": "",
+          "name": "内镜下逆行性胰胆管造影（ERCP）"
+        },
+        {
+          "key": "超声内镜",
+          "region": "",
+          "name": "超声内镜（EUS）"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "腹痛、腹胀缓解，营养摄入状况改善或营养状态稳定",
+        "血淀粉酶稳定下降，或进食后无明显升高"
+      ]
+    },
+    "N18": {
+      "icd10": "N18",
+      "code3": "N18",
+      "pathway": "终末期肾病常规血液透析导入",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 14,
+      "surgical": false,
+      "procedure": "",
+      "chief_symptoms": [],
+      "signs": [],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规+网织红细胞计数"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "粪常规",
+          "region": "",
+          "name": "大便常规+隐血"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "血糖",
+          "region": "",
+          "name": "血糖"
+        },
+        {
+          "key": "血脂",
+          "region": "",
+          "name": "血脂"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "X线胸片"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "超声",
+          "region": "泌尿",
+          "name": "泌尿系超声波检查"
+        },
+        {
+          "key": "心脏超声",
+          "region": "",
+          "name": "超声心动图"
+        }
+      ],
+      "exams_optional": [
+        {
+          "key": "利钠肽",
+          "region": "",
+          "name": "BNP检查"
+        },
+        {
+          "key": "CT",
+          "region": "胸",
+          "name": "肺部CT"
+        },
+        {
+          "key": "超声",
+          "region": "腹",
+          "name": "腹部超声"
+        },
+        {
+          "key": "超声",
+          "region": "",
+          "name": "血管彩超"
+        }
+      ],
+      "postop_incision": false,
+      "postop_drain": false,
+      "postop_watch": [],
+      "discharge_criteria": [
+        "自体动静脉内瘘、移 植 物 动 静 脉 内 瘘或带隧道和涤纶",
+        "无需继续住院诊治的手术并发症/合并症",
+        "指导患者学会血液透析开始后的自体动静脉内瘘、移 植 物 动",
+        "每日蛋白摄入量：1.2g/(kg·d)",
+        "指导患者控磷饮食",
+        "确定透析方案，出院后进行维持性血液透析"
+      ]
+    },
+    "N20": {
+      "icd10": "N20",
+      "code3": "N20",
+      "pathway": "肾结石（经皮肾镜碎石术）",
+      "version": "2019年版",
+      "issuer": "国家卫生健康委办公厅 国卫办医函〔2019〕933号",
+      "los_max": 10,
+      "surgical": true,
+      "procedure": "经皮肾镜碎石术（PCNL）",
+      "chief_symptoms": [],
+      "signs": [],
+      "exams_required": [
+        {
+          "key": "血常规",
+          "region": "",
+          "name": "血常规"
+        },
+        {
+          "key": "尿常规",
+          "region": "",
+          "name": "尿常规"
+        },
+        {
+          "key": "肝功能",
+          "region": "",
+          "name": "肝肾功能"
+        },
+        {
+          "key": "肾功能",
+          "region": "",
+          "name": "肾功能"
+        },
+        {
+          "key": "电解质",
+          "region": "",
+          "name": "电解质"
+        },
+        {
+          "key": "凝血",
+          "region": "",
+          "name": "凝血功能"
+        },
+        {
+          "key": "X线",
+          "region": "胸",
+          "name": "胸片"
+        },
+        {
+          "key": "X线",
+          "region": "腹",
+          "name": "腹部平片（KUB）"
+        },
+        {
+          "key": "心电图",
+          "region": "",
+          "name": "心电图"
+        },
+        {
+          "key": "CT",
+          "region": "泌尿",
+          "name": "泌尿系造影或CT"
+        }
+      ],
+      "exams_optional": [],
+      "postop_incision": false,
+      "postop_drain": true,
+      "postop_watch": [
+        "术后饮食饮水指导",
+        "术后活动指导",
+        "引流管护理方法"
+      ],
+      "discharge_criteria": [
+        "一般情况良好",
+        "肾造瘘无漏尿",
+        "D-J管位置正常"
+      ]
+    }
+  }
+}
