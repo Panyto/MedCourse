@@ -33,7 +33,7 @@ from .safe import SafeError, guarded, log
 
 MAX_SECTION_TRIES = 3
 MAX_DOC_REWRITES = 2
-VERSION = "s1-pipeline-0.3.2"  # 0.32：核心定性影像阳性支撑与术前回报时序、同日术前(k<post_k)/无切口终检阻断、正交正则与修补函数大瘦身
+VERSION = "s1-pipeline-0.3.3"  # 0.33：S4 反事实前缀非预期性收口、对称认识论消融（--ablate-epistemic）与首轮成文留存（--save-first-try）
 PE_EXCERPT, SPEC_EXCERPT = 300, 60   # 0.1.11：出院记录"入院情况"的摘录 120 → 300 字（第十次合成病历 M6，阳性体征在 120 字以后）
 PE_REF = 400                         # 0.1.11：专科情况提示里给的体格检查全文上限
 _SENT_END = "。！？!?"
@@ -58,10 +58,11 @@ def hr_context(texts):
     return {"hr_pe": pe} if pe else {}
 
 
-def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=None):
+def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=None, first_doc_out=None):
     """写一篇。每节最多采 3 次，仍不过就取失败最少的那次，交给住院级闸门。"""
-    plans = compiler.compile_doc(j, spec, specs, stats, rng, ctx)
-    texts = {}
+    epistemic = not getattr(w, "ablate_epistemic", False)
+    plans = compiler.compile_doc(j, spec, specs, stats, rng, ctx, epistemic=epistemic)
+    texts, first_texts = {}, {}
     for pl in plans:
         if pl["mode"] == "program":
             continue
@@ -70,12 +71,13 @@ def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=Non
             vis = compiler.visible(j, vday)
             # 0.1.12.1（老板 11-10 批准）：这一节里结果口吻的检查只能是截至当天已回报的（"入院情况"这类只写入院当时的节到第 0 天）
             pl["result_keys"] = gate.result_keys(vis["results"])
-            # 0.2.0（老板 11-11 批准）：当天仍处于"疑似"状态的诊断不许写成确诊或排除定论（只看截至当天可见状态，不看未来）
-            pl["unsettled_dx"] = sorted(n for n, st in vis["dx"].items() if st == "疑似" and len(n) >= 2)
-            pl["settled_dx"] = sorted(
-                {n for n, st in vis["dx"].items() if st != "疑似" and len(n) >= 2}
-                | {c["name"] for c in j["patient"]["comorbidities"] if c["at_admission"] and len(c["name"]) >= 2}
-            )
+            if epistemic:
+                # 0.2.0（老板 11-11 批准）：当天仍处于"疑似"状态的诊断不许写成确诊或排除定论（只看截至当天可见状态，不看未来）
+                pl["unsettled_dx"] = sorted(n for n, st in vis["dx"].items() if st == "疑似" and len(n) >= 2)
+                pl["settled_dx"] = sorted(
+                    {n for n, st in vis["dx"].items() if st != "疑似" and len(n) >= 2}
+                    | {c["name"] for c in j["patient"]["comorbidities"] if c["at_admission"] and len(c["name"]) >= 2}
+                )
         if getattr(w, "no_filler", False) and spec["role"] in compiler.COURSE:
             # 0.1.7 套话约束臂：病程提示词多一条，不写没给的生命体征、不每篇都写笼统套话
             pl["no_filler"] = True
@@ -111,6 +113,8 @@ def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=Non
             else:
                 pl.pop("retry_fails", None)
             text = w.write(j, spec, pl, attempt + 10 * round_)
+            if attempt == 0 and first_doc_out is not None:
+                first_texts[pl["section"]] = text
             fails = gate.check_section(pl, text)
             last_fails = fails
             if attempt:
@@ -150,6 +154,8 @@ def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=Non
             tally["copied_chars"] = tally.get("copied_chars", 0) + added
             tally["note_chars"] = tally.get("note_chars", 0) + len(best)
         texts[pl["section"]] = best
+    if first_doc_out is not None:
+        first_doc_out.append(compiler.assemble(j, spec, specs, plans, first_texts))
     return compiler.assemble(j, spec, specs, plans, texts), texts
 
 
@@ -196,7 +202,7 @@ def _prev_ctx(k, specs, note_bodies):
     return base
 
 
-def generate_one(jid, stats, w, seed, slot, tally):
+def generate_one(jid, stats, w, seed, slot, tally, first_docs_out=None):
     """返回 (journey, docs, 失败码列表)。docs 为 None 表示丢弃。"""
     rng = random.Random(planner.seed_of(seed, jid))
     j = planner.plan_journey(stats, rng, jid, slot)
@@ -208,8 +214,11 @@ def generate_one(jid, stats, w, seed, slot, tally):
         return j, None, ["plan_" + e for e in sorted(set(errs))]
     docs, note_bodies, ctx = [], {}, {}
     for spec in specs:
-        text, texts = write_doc(j, spec, specs, stats, w, rng, tally, _prev_ctx(spec["k"], specs, note_bodies), ctx=ctx)
+        fbox = [] if first_docs_out is not None else None
+        text, texts = write_doc(j, spec, specs, stats, w, rng, tally, _prev_ctx(spec["k"], specs, note_bodies), ctx=ctx, first_doc_out=fbox)
         docs.append({"doc_type": spec["doc_type"], "day_offset": spec["day"], "text": text, "doc_type_cn": spec["doc_type_cn"], "k": spec["k"], "role": spec["role"]})
+        if first_docs_out is not None:
+            first_docs_out.append({"doc_type": spec["doc_type"], "day_offset": spec["day"], "text": fbox[0], "doc_type_cn": spec["doc_type_cn"], "k": spec["k"], "role": spec["role"]})
         if spec["role"] == "HR":
             ctx = hr_context(texts)
         src = _note_copy_source(spec["role"], texts)
@@ -280,6 +289,8 @@ def main():
     ap.add_argument("--no-filler", action="store_true", help="病程提示词加一条不写笼统套话（0.1.7 W-8B 对照臂）")
     ap.add_argument("--no-filler2", action="store_true", help="同上，但不点套话的名（0.1.8 W-8B 对照臂 D）")
     ap.add_argument("--num-placeholder", action="store_true", help="将事实中的日期/数值替换为 <D1>/<N1> 占位符并由程序确定性回填（0.21.2 / S3）")
+    ap.add_argument("--ablate-epistemic", action="store_true", help="认识论对称消融：保持可见客观历史不变，剥离显式诊断状态编译与 unsettled_dx 断言门控（0.33）")
+    ap.add_argument("--save-first-try", action="store_true", help="同步导出每节首轮 attempt=0 未经门控重试前的文书至 first_try_admissions.jsonl（0.33）")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     if not a.stats and not a.kb_only:
@@ -304,6 +315,7 @@ def main():
         raise SafeError("no_filler_both")
     w.no_filler = a.no_filler
     w.no_filler2 = a.no_filler2
+    w.ablate_epistemic = a.ablate_epistemic
     if a.mode == "paired":
         if not a.slots:
             raise SafeError("paired_needs_slots")
@@ -312,13 +324,15 @@ def main():
         work = [(f"MC{a.seed}-{i:05d}", None) for i in range(a.n)]
     tally, discards, lock = {"planned": len(work), "kept": 0, "discarded": 0, "llm_errors": 0}, {}, threading.Lock()
     t0 = time.perf_counter()
-    paths = {x: open(os.path.join(a.out, f"{x}.jsonl"), "w", encoding="utf-8") for x in ("admissions", "journeys", "drafts")}
+    out_names = ("admissions", "journeys", "drafts") + (("first_try_admissions",) if a.save_first_try else ())
+    paths = {x: open(os.path.join(a.out, f"{x}.jsonl"), "w", encoding="utf-8") for x in out_names}
 
     def one(item):
         jid, slot = item
         local = {}
+        local_first = [] if a.save_first_try else None
         try:
-            j, docs, fails = generate_one(jid, stats, w, a.seed, slot, local)
+            j, docs, fails = generate_one(jid, stats, w, a.seed, slot, local, first_docs_out=local_first)
         except LLMError as e:
             with lock:
                 tally["llm_errors"] += 1
@@ -339,6 +353,8 @@ def main():
             paths["admissions"].write(json.dumps(admission_line(j, docs), ensure_ascii=False) + "\n")
             paths["journeys"].write(json.dumps(j, ensure_ascii=False) + "\n")
             paths["drafts"].write(json.dumps({"slot_id": jid, "draft": planner.journey_to_draft(j)}, ensure_ascii=False) + "\n")
+            if local_first is not None:
+                paths["first_try_admissions"].write(json.dumps(admission_line(j, local_first), ensure_ascii=False) + "\n")
 
     with ThreadPoolExecutor(a.concurrency) as pool:
         list(pool.map(one, work))
@@ -349,7 +365,8 @@ def main():
                   "calls_per_kchar": round(1000 * w.calls / tally["chars"], 3) if tally.get("chars") else None,
                   "calls_per_adm": round(w.calls / max(1, tally["kept"]), 2), "first_pass_rate": round(tally.get("first_pass", 0) / max(1, tally["planned"]), 4),
                   "discard_rate": round(tally["discarded"] / max(1, tally["planned"]), 4), "version": VERSION, "seed": a.seed, "mode": a.mode, "writer": a.writer,
-                  "prev_note": a.prev_note, "no_filler": a.no_filler, "no_filler2": a.no_filler2, "num_placeholder": a.num_placeholder, "model": a.model if a.writer == "llm" else None})
+                  "prev_note": a.prev_note, "no_filler": a.no_filler, "no_filler2": a.no_filler2, "num_placeholder": a.num_placeholder,
+                  "ablate_epistemic": a.ablate_epistemic, "model": a.model if a.writer == "llm" else None})
     with open(os.path.join(a.out, "counts.json"), "w", encoding="utf-8") as f:
         json.dump(tally, f, ensure_ascii=False, indent=1, sort_keys=True)
     with open(os.path.join(a.out, "discard.csv"), "w", encoding="utf-8", newline="") as f:

@@ -2803,7 +2803,7 @@ class TestV01121(unittest.TestCase):
         for i in range(60):
             pipeline.generate_one(f"RT{i:03d}", st, writer.TemplateWriter(), 20261102, None, tally)
         self.assertEqual(tally.get("sec_result_unsourced", 0), 0, {k: v for k, v in tally.items() if k.startswith("sec_")})
-        self.assertEqual(pipeline.VERSION, "s1-pipeline-0.3.2")
+        self.assertEqual(pipeline.VERSION, "s1-pipeline-0.3.3")
 
 
 class TestV0113(unittest.TestCase):
@@ -4316,6 +4316,154 @@ class TestV032(unittest.TestCase):
         self.assertIn("超声|腹", global_items)
         lifts = planner.exam_lifts(st_b, ["J15", "J", "*"], {"肺"})
         self.assertGreater(lifts.get("CT|胸", 0.0), 1.0)
+
+
+class TestV033(unittest.TestCase):
+    def test_s4_counterfactual_prefix_non_anticipation(self):
+        pools = [(fixtures_mc.stats(), "FIX"), (kb.build_b_only_stats(), "KBB")]
+        checked_specs = 0
+        for st, tag in pools:
+            for i in range(20):
+                rng = random.Random(20261125 + i)
+                j = planner.plan_journey(st, rng, f"{tag}{i:02d}", None)
+                specs = planner.schedule(j, st, rng)
+                for s in specs:
+                    if s["role"] == "DS":
+                        continue
+                    checked_specs += 1
+                    day = s["day"]
+                    j2 = copy.deepcopy(j)
+                    j2["los"] = j["los"] + 4
+                    for t in range(day + 1, len(j2["daily"])):
+                        j2["daily"][t]["T"] = 38.9
+                        j2["daily"][t]["symptoms"] = ["新发未来高热"]
+                    for ed in range(len(j2["daily"]), j2["los"] + 1):
+                        j2["daily"].append({"day": ed, "T": 38.9, "P": 108, "R": 24, "SBP": 140, "DBP": 88, "trend": "平稳", "symptoms": ["新发未来高热"]})
+                    for e in j2["exams"]:
+                        if e["result_day"] > day:
+                            e["result_day"] += 2
+                            e["finding"] = "未来篡改结果"
+                            e["abnormal"] = True
+                            for it in e["items"]:
+                                it["value"] = "999.9"
+                                it["flag"] = "偏高"
+                    j2["exams"].append({"id": "efut", "key": "CT", "region": "头", "name": "头颅CT", "kind": "影像",
+                                        "order_day": day + 1, "result_day": day + 2, "items": [], "abnormal": True, "diagnostic": True, "finding": "未来梗死灶"})
+                    for m in j2["meds"]:
+                        if m["stop_day"] >= day:
+                            m["stop_day"] = m["stop_day"] + 3
+                    j2["meds"].append({"id": "mfut", "drug_id": "vancomycin", "name": "万古霉素", "class": "抗菌药", "dose": "0.5g",
+                                       "freq": "q12h", "route": "静滴", "start_day": day + 1, "stop_day": day + 4, "discharge": False})
+                    if not any(a["decide_day"] <= day for a in j2["procedures"]):
+                        j2["surgical"] = True
+                        j2["surgery_day"] = day + 2
+                        j2["procedures"].append({"id": "afut", "kind": "手术", "name": "未来急诊手术", "side": None,
+                                                 "decide_day": day + 1, "do_day": day + 2, "anesthesia": "全身麻醉"})
+                    j2["dx_events"].append({"id": "dfut", "name": "未来新发诊断", "day": day + 1, "state": "确诊"})
+                    j2["patient"]["comorbidities"].append({"name": "未来出院新增", "at_admission": False})
+                    specs2 = [copy.deepcopy(x) for x in specs if x["k"] <= s["k"]] + [
+                        {"k": s["k"] + 1, "day": day + 2, "role": "POST", "doc_type": "progress_note", "doc_type_cn": "术后首次病程记录", "time": "18:00"}
+                    ]
+                    for ep in (True, False):
+                        p1 = compiler.compile_doc(j, s, specs, st, random.Random(77), epistemic=ep)
+                        p2 = compiler.compile_doc(j2, s, specs2, st, random.Random(77), epistemic=ep)
+                        self.assertEqual(p1, p2, (tag, i, s["role"], s["day"], ep))
+                    self.assertEqual(compiler.copy_banned(j, day), compiler.copy_banned(j2, day))
+        self.assertGreater(checked_specs, 150)
+
+    def test_ablate_epistemic_history_parity_and_state_stripping(self):
+        st = fixtures_mc.stats()
+        j, specs, _, _ = make("EPI33", 5, None, st)
+        dx_name = j["patient"]["primary_dx"]["name"]
+        j["los"] = max(j["los"], 3)
+        j["daily"] = j["daily"][:4]
+        while len(j["daily"]) < 4:
+            j["daily"].append(dict(j["daily"][-1], day=len(j["daily"])))
+        for idx, d in enumerate(j["daily"]):
+            d["day"] = idx
+        j["exams"] = [
+            {"id": "e1", "key": "血常规", "region": None, "name": "血常规", "kind": "检验", "order_day": 0, "result_day": 0,
+             "items": [{"item": "白细胞", "key": "WBC", "value": "12.5", "unit": "×10^9/L", "flag": "偏高"}]},
+            {"id": "e2", "key": "CT", "region": "胸", "name": "胸部CT", "kind": "影像", "order_day": 0, "result_day": 2,
+             "items": [], "abnormal": True, "diagnostic": True, "finding": f"符合{dx_name}表现"},
+            {"id": "e3", "key": "痰培养", "region": None, "name": "痰培养", "kind": "培养", "order_day": 1, "result_day": 2,
+             "items": [], "abnormal": False, "diagnostic": False, "finding": "未培养出致病菌"},
+        ]
+        j["dx_events"] = [
+            {"id": "d1", "name": dx_name, "day": 0, "state": "疑似"},
+            {"id": "d2", "name": dx_name, "day": 2, "state": "确诊"},
+            {"id": "d3", "name": "肺栓塞", "day": 0, "state": "疑似"},
+            {"id": "d4", "name": "肺栓塞", "day": 2, "state": "排除"},
+        ]
+        j["differentials"] = ["肺栓塞"]
+        specs = [
+            {"k": 0, "day": 0, "role": "HR", "doc_type": "hospital_record", "doc_type_cn": "入院记录", "time": "09:00"},
+            {"k": 1, "day": 0, "role": "FP", "doc_type": "progress_note", "doc_type_cn": "首次病程记录", "time": "10:00"},
+            {"k": 2, "day": 1, "role": "SUP", "doc_type": "progress_note", "doc_type_cn": "主治医师查房记录", "time": "09:30"},
+            {"k": 3, "day": 2, "role": "SUP", "doc_type": "progress_note", "doc_type_cn": "主任医师查房记录", "time": "09:30"},
+            {"k": 4, "day": 3, "role": "DS", "doc_type": "discharge_summary", "doc_type_cn": "出院记录", "time": "10:00"},
+        ]
+        for sp in specs:
+            p_full = compiler.compile_doc(j, sp, specs, st, random.Random(11), epistemic=True)
+            p_vis = compiler.compile_doc(j, sp, specs, st, random.Random(11), epistemic=False)
+            self.assertEqual([x["section"] for x in p_full], [x["section"] for x in p_vis])
+            self.assertEqual([x.get("target_chars") for x in p_full], [x.get("target_chars") for x in p_vis])
+            if sp["role"] == "FP":
+                vis_disc = next(x for x in p_vis if x["section"] == "拟诊讨论")
+                vis_plan = next(x for x in p_vis if x["section"] == "诊疗计划")
+                self.assertTrue(any("胸部CT" in f["text"] and "结果待回报" in f["text"] for f in vis_disc["facts"]))
+                self.assertTrue(any("胸部CT" in f["text"] for f in vis_plan["facts"]))
+                self.assertIsNone(vis_plan.get("hint"))
+                vis_adm = next(x for x in p_vis if x["section"] == "初步诊断")
+                self.assertNotIn("？", vis_adm["program_text"])
+            if sp["role"] == "SUP" and sp["day"] == 1:
+                vis_txt = next(x for x in p_vis if x["section"] == "正文")["facts"]
+                self.assertFalse(any("诊断尚待进一步明确" in f["text"] for f in vis_txt))
+                self.assertTrue(any("已开具痰培养，待回报" in f["text"] for f in vis_txt))
+            if sp["role"] == "SUP" and sp["day"] == 2:
+                vis_txt = next(x for x in p_vis if x["section"] == "正文")["facts"]
+                self.assertFalse(any("结合检查结果" in f["text"] for f in vis_txt))
+                self.assertTrue(any("胸部CT示：" in f["text"] for f in vis_txt))
+
+        tmp = tempfile.mkdtemp(prefix="epi33_")
+        try:
+            d_full = os.path.join(tmp, "full")
+            d_vis = os.path.join(tmp, "vis")
+            r1 = run_mod("medcourse.pipeline", "--kb-only", "--mode", "free", "--n", "3", "--seed", "20261125",
+                         "--writer", "template", "--save-first-try", "--concurrency", "1", "--out", d_full)
+            r2 = run_mod("medcourse.pipeline", "--kb-only", "--mode", "free", "--n", "3", "--seed", "20261125",
+                         "--writer", "template", "--ablate-epistemic", "--save-first-try", "--concurrency", "1", "--out", d_vis)
+            self.assertEqual(r1.returncode, 0, r1.stderr)
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            self.assertEqual(open(os.path.join(d_full, "journeys.jsonl"), encoding="utf-8").read(),
+                             open(os.path.join(d_vis, "journeys.jsonl"), encoding="utf-8").read())
+            self.assertTrue(os.path.isfile(os.path.join(d_full, "first_try_admissions.jsonl")))
+            self.assertTrue(json.load(open(os.path.join(d_vis, "counts.json"), encoding="utf-8"))["ablate_epistemic"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_save_first_try_records_attempt0_before_gate_retry(self):
+        class RetryWriter(writer.TemplateWriter):
+            def write(self, j, spec, plan, attempt):
+                if spec["role"] == "FP" and plan["section"] == "拟诊讨论":
+                    dx = j["patient"]["primary_dx"]["name"]
+                    if attempt == 0:
+                        return f"根据当前表现，{dx}诊断明确。"
+                    return f"目前考虑{dx}可能，待检查回报后进一步明确。"
+                return super().write(j, spec, plan, attempt)
+
+        from unittest import mock
+        st = fixtures_mc.stats()
+        with mock.patch.object(pipeline.planner, "P_DX_CHANGE", 1.0):
+            first_docs = []
+            j, docs, fails = pipeline.generate_one("FT33", st, RetryWriter(), 42, None, {}, first_docs_out=first_docs)
+        self.assertIsNotNone(docs, fails)
+        self.assertEqual(len(first_docs), len(docs))
+        fp_first = next(d for d in first_docs if d["role"] == "FP")
+        fp_final = next(d for d in docs if d["role"] == "FP")
+        self.assertIn("诊断明确", fp_first["text"])
+        self.assertNotIn("诊断明确", fp_final["text"])
+        self.assertIn("进一步明确", fp_final["text"])
 
 
 if __name__ == "__main__":

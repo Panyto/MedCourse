@@ -1,3 +1,12 @@
+# medcourse_core v0.3.3（S4 反事实前缀非预期性收口、对称认识论消融开关与首轮成文留存）
+
+- 对应依据：落地方案中的 **S4 前缀非预期性形式化单测** 及与学术审稿意见对齐的 **`Visibility-Only` vs `Explicit Epistemic State` 对称归因消融接口**（保持可见检查/在用药/已开立未回报医嘱与已决定未施行手术完全一致，仅剥离显式诊断断言状态与 `unsettled_dx` 门控，同时留存 `attempt == 0` 首轮产出以拆解写手首次收益与门控总收益）。
+- 三项改动与校验：
+  1. **S4 前缀非预期性收口**（`compiler.py`）：收紧 `course_focus` 在用药持续时间判定（移除 `stop_day > day` 对未来停药的前瞻）、`PRE`/`POST` 术式过滤（增加 `decide_day <= day` / `do_day <= day` 谓词）与 `copy_banned`（症状仅扫描 `daily[:day + 1]` 历史前序），固化对 40 例混合数据与随机未来扰动下的全量逐字段前缀不变性断言。
+  2. **对称认识论消融与首轮成文留存**（`compiler.py`、`pipeline.py`）：`compile_doc` / `course_focus` 新增 `epistemic=True` 参数，并在 `pipeline` 命令行增加 `--ablate-epistemic`（保留完整可见事实、已开单待回报项与已决定拟施手术，仅隐藏 `？` 拟诊标记、`考虑/明确/鉴别待排` 状态词及 `unsettled_dx` / `settled_dx` 门控字段，同时保护 RNG 抽样流严格同序）与 `--save-first-try`（同步导出 `first_try_admissions.jsonl` 记录 `attempt == 0` 原始生成结果）。
+  3. **版本与单测（212 条）**：`VERSION` 升至 `medcourse-core-0.3.3`，`pipeline.VERSION` 升至 `s1-pipeline-0.3.3`，新增 `TestV033`（+3 项单测）。
+- 旧断言更新说明：`tests/test_mc.py` `TestV01121.test_template_has_no_unsourced` 的 `pipeline.VERSION` 断言由 `"s1-pipeline-0.3.2"` 同步更新为 `"s1-pipeline-0.3.3"`。
+
 # medcourse_core v0.3.2（诊断检查耦合、当日术前/无切口门禁补漏与正则重构瘦身）
 
 - 对应依据：针对 `BLIND10` 与 `SYNTH_KB40` 临床质检暴露的诊断性影像错配（如急性阑尾炎/急性心肌梗死/输尿管结石“检查全阴性”）、手术当日术前病程写“术后第N天”逃逸、经尿道/局部麻醉无切口术式写“切口/引流”及重复体力/体征句式等问题做上游修复；同步清理核心模块冗余正则，将核心 4 模块（`planner.py`、`gate.py`、`compiler.py`、`kb.py`）`re.*` 调用从 157 处降至 85 处（`gate.py` 由 757 行减至 705 行）。不改动 `stats.py`、`plan_diag.py`、`out_diag.py`、`contract.py`、`synth_export.py` 与冻结 `stats_v021.json`。
