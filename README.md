@@ -13,7 +13,7 @@
 ```text
 MedCourse/
 ├── packages/
-│   ├── medcourse_core/         # 主线核心引擎 (v0.3.3): 统计与路线B kb_v22/四类主诉规划/按日可见与S4前缀非预期编译/对称认知消融/轻量化门控/S2抽取
+│   ├── medcourse_core/         # 主线核心引擎 (v0.3.4): 统计与路线B kb_v22/四类主诉与临床常识护栏/S4前缀非预期与认知消融/轻量化门控/S2抽取
 │   ├── route_b_kit/            # 路线 B 核心包 (v0.5): 开源 8B 多轮检索式临床路径建表与引文核验
 │   ├── bench_core/             # 独立评测台 (S0 v0.2): 六维度量化指标、负对照与记分牌聚合
 │   ├── gm_tools/               # 基线对比工具与对照实验脚本 (S1)
@@ -48,13 +48,15 @@ python scripts/run_all_tests.py
 ```
 
 各模块包均保留原生目录结构与 `MANIFEST.sha256` 校验文件：
-- `medcourse_core`（`v0.3.3`）：**212 项单元测试**（涵盖 `mc-stats-0.21` 动态表回退、路线 B `kb_v22.json` 协同与 `--kb-only` 冷启动、`Copula` 化验校准、四类主诉状态机与诊断性影像耦合、双时间轴与同日术前 `k < post_k` 编译、S4 反事实前缀非预期性收口、`--ablate-epistemic` 与 `--save-first-try` 对称认知消融开关、无切口与节级/篇级 `gate`、两趟抽取 `extract`）
+- `medcourse_core`（`v0.3.4`，冻结版 `s1-pipeline-0.3.4`）：**218 项单元测试**（涵盖 `mc-stats-0.21` 动态表回退、路线 B `kb_v22.json` 协同与 `--kb-only` 冷启动、`Copula` 化验校准、四类主诉状态机与诊断性影像耦合、双时间轴与同日术前 `k < post_k` 编译、S4 反事实前缀非预期性收口、`--ablate-epistemic` 与 `--save-first-try` 对称认知消融开关、无切口/产科早孕未娩/新生儿与儿童剂量/`Z51` 肿瘤专科与裸影像 8 项临床常识护栏、轻量化节级/篇级 `gate`、两趟抽取 `extract`）
 - `route_b_kit`：43 项单元测试（动态规划章节切分、去病名 BM25、`DECIDE -> ANSWER` 先置引用与 `provenance` 核验）
 - `gold_kit`：11 项单元测试
 - `gm_tools`：14 项单元测试
 - `bench_core`：62 项单元测试（在安装 `scikit-learn` 的环境如 Colab 下运行全部端到端测试；纯标准库环境自动跳过需 `sklearn` 的 `TestEndToEnd`）
 
-### `medcourse_core v0.3.2 -> v0.3.3` 核心演进摘要
+### `medcourse_core v0.3.2 -> v0.3.4` 核心演进摘要
+
+- **临床常识封口与 S5/S6 前生成端冻结（`v0.3.4`）**：在 `icd.py`/`drug_class.py`/`kb.py`/`planner.py`/`compiler.py`/`gate.py`/`writer.py` 合入 8 项临床常识护栏（非手术无切口全域贯穿、妊娠 `<14w`/`14-19w`/`>=20w` 分段与 `<18w` 禁胎动/未娩禁产褥、`脊柱`/`咽喉` 映射与模态感知部位消解裸影像、`takes_tissue` 排除碎石/取石/内固定/剖宫产/修补与治疗性入院防错配病理、新生儿 `3-27 天` 定标与扩展儿科按体重激素/止吐/解热镇痛极量、`Z51` 肿瘤专科与抗肿瘤适应证对齐、`COURSE` 诊断事件 `must=True` 保留与 `_CARRY_ORDER_WORDS` 去泛化粘连，并从查体模板移除“主诉”以清零 `qa_adm_pe_history`），新增 `TestV034ClinicalAntiHallucination` 6 项单测（合计 **`218/218`** 通过）。内网受控服务器 `ys` `Qwen3-32B-AWQ` 复核：`BLIND10` `10/10`、`P80` 自由模式成活 `78/80`（`llm_errors=0`，`gate/b7/g3` 全 `0`，`oracle2 O/A/B = 0/0/0`，8 项 `v034` 专项 `0/78`、`qa_adm_pe_history` 由 `17/255` 降至 `0/78`）；自 `v0.3.4` 起正式冻结生成端以启动 `fold 9` S5/S6 独立终验。
 
 - **S4 反事实前缀非预期性与对称认知消融（`v0.3.3`）**：收紧 `compiler.course_focus` 长程摘要与 `copy_banned(j, day)` 的停药/症状前缀可观测边界，并在 `TestV033` 固化反事实单测；新增 `--ablate-epistemic`（保持可见已回报、已开待回检查及计划手术/医嘱历史逐字段一致，仅剥离显式认知状态提示与 `unsettled_dx` 门控）与 `--save-first-try`（留存 `attempt=0` 首轮成文快照）。在 `--kb-only` `N=60`（`Qwen3-32B-AWQ`）对称对照中，显式认知状态在 `First-Try` 阶段即将证据到位后诊断遗漏更新由 **89.7%（26/29）降至 48.3%（14/29，确诊漏更新 18/21 → 7/21）**、双窗严格对齐率由 **10.3% 提升至 51.7%（+41.4pp）**、前窗宽松过早断言由 **28.2% 降至 23.1%**（仅增 `+0.42%` 调用，1,431 vs 1,425 次）；内网受控服务器 `v0.3.3` `32B` 端到端实测 `BLIND10` `10/10` 零泄露、`A256` 成活 `255/256`（`oracle2 O/A/B = 1/0/0`，`g3/b7` 全零违规）。
 - **跨院通用国标成文与路线 B 融合**：接通 17 病种公开临床路径表 `medcourse/data/kb_v22.json` 与 `build_b_only_stats`（`--kb-only` 零私有数据冷启动）；成文提示全面对齐国家卫健委《病历书写基本规范》（支持 `Qwen/Qwen3-32B-AWQ` 免微调通用高质合成，无需单院文风拟合），关闭句级硬拼贴（`splice_copy=False`），改用前置延续注入与错误码重采样（`RETRY_GUIDANCE`）。

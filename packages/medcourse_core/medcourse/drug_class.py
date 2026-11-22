@@ -172,5 +172,30 @@ def is_chronic(did):
     return did in CHRONIC_DRUGS or drug_class(did) in CHRONIC
 
 
+_HEME_MALIG_RE = re.compile(r"白血病|骨髓瘤|骨髓增生")
+_SOLID_TUMOR_SITE_RE = re.compile(r"结肠|直肠|胃|肝|胆|胰|食管|肺|支气管|乳腺|乳房|卵巢|宫颈|子宫|前列腺|膀胱|尿路上皮|头颈|鼻咽|口腔|喉|淋巴瘤")
+ANTITUMOR_INDICATION = {
+    "oxaliplatin": re.compile(r"结肠|直肠|肠|胃|肝|胆|胰|食管"),
+    "capecitabine": re.compile(r"结肠|直肠|肠|胃|肝|胆|胰|乳腺|乳房"),
+    "fluorouracil": re.compile(r"结肠|直肠|肠|胃|食管|肝|胰|头颈|鼻咽|口腔|喉|乳腺|乳房"),
+    "paclitaxel": re.compile(r"乳腺|乳房|卵巢|宫颈|子宫|肺|支气管|食管|胃|头颈|鼻咽|口腔|喉|膀胱"),
+    "docetaxel": re.compile(r"乳腺|乳房|肺|支气管|前列腺|胃|卵巢|宫颈|子宫|头颈|鼻咽|口腔|喉"),
+    "gemcitabine": re.compile(r"肺|支气管|胰|胆|肝|膀胱|尿路上皮|乳腺|乳房|卵巢|淋巴瘤|鼻咽"),
+}
+
+
+def antitumor_ok(did, dx_text):
+    """抗肿瘤药与肿瘤部位/谱系一致性校验（防 Z51 池化跨专科错配）。非抗肿瘤药一律放行。"""
+    if drug_class(did) != "抗肿瘤药":
+        return True
+    t = dx_text or ""
+    if _HEME_MALIG_RE.search(t) and "淋巴瘤" not in t:
+        return did == "cyclophosphamide"
+    if not _SOLID_TUMOR_SITE_RE.search(t):
+        return True
+    rx = ANTITUMOR_INDICATION.get(did)
+    return True if rx is None else bool(rx.search(t))
+
+
 def stop_reason(cls):
     return STOP_REASON.get(cls, DEFAULT_STOP)

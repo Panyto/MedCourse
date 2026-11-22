@@ -58,7 +58,7 @@ from statistics import NormalDist
 
 from . import icd, kb
 from .contract import CONTRACT_VERSION, validate_docspecs, validate_journey
-from .drug_class import drug_class, indicated, is_chronic, oral_ok, subclass
+from .drug_class import antitumor_ok, drug_class, indicated, is_chronic, oral_ok, subclass
 from .rules import setup
 from .stats import (AGE_BANDS, LAB_NAME, LAB_UNIT, PAST_TERMS, PLAUSIBLE, PROC_FAMILY_NAME, REF, STATS_VERSION,
                     los_bucket, past_matches, proc_family, prog_day_bucket)
@@ -87,18 +87,21 @@ EXAM_CLS = {"检验": ("血常规", "尿常规", "便常规", "粪常规", "肝�
 KIND_OF = {k: c for c, ks in EXAM_CLS.items() for k in ks}
 # 0.1.9（审查员第八轮补充）：检查看的是哪个器官，诊断在哪个器官。"诊断相关"要两边对得上（第八次：脑梗死写了"心脏超声提示脑梗死"
 # "泌尿系超声提示脑梗死"，慢性肾脏病写了"心脏超声提示慢性肾脏病"）。公开解剖常识，不来自病历。
-REGION_ORGAN = {"头": "脑", "颈": "颈", "胸": "肺", "心": "心", "腹": "腹", "盆": "盆", "泌尿": "泌尿", "脊柱": "骨", "四肢": "骨", "乳腺": "乳腺", "血管": "血管"}
+REGION_ORGAN = {"头": "脑", "颈": "颈", "胸": "肺", "心": "心", "腹": "腹", "盆": "盆", "泌尿": "泌尿", "脊柱": "脊柱", "四肢": "骨", "乳腺": "乳腺", "血管": "血管"}
 KEY_ORGAN = {"心脏超声": "心", "动态心电图": "心", "动态血压": "心", "冠脉造影": "心", "MRCP": "腹", "超声内镜": "腹", "ERCP": "腹", "胃镜": "腹", "肠镜": "腹",
              "胶囊内镜": "腹", "肺功能": "肺", "睡眠监测": "肺", "支气管镜": "肺", "痰培养": "肺", "脑电图": "脑", "脑血管造影": "脑", "腰椎穿刺": "脑",
              "肌电图": "神经", "骨密度": "骨", "喉镜": "咽喉", "膀胱镜": "泌尿", "尿培养": "泌尿", "骨髓穿刺": "血液", "血培养": "全身", "PET": "全身"}
 # 诊断所在的器官系统从 ICD-10 的分类结构推（公开分类，不按病名写规则）：先查三位码（只有良性肿瘤 D10–D36 这一节按部位分到三位码），
 # 再查节，再查章。诊断没有三位码时（章层诊断名、化疗住院的原发病）用公开词典按名字查三位码
-ORGAN_ORDER = ("脑", "颈", "肺", "心", "腹", "泌尿", "盆", "乳腺", "骨", "血管", "血液", "咽喉", "神经", "全身")
+ORGAN_ORDER = ("脑", "颈", "肺", "心", "腹", "泌尿", "盆", "乳腺", "脊柱", "骨", "血管", "血液", "咽喉", "神经", "全身")
 CHAPTER_ORGAN = {"A": "全身", "B": "全身", "F": "脑", "G": "脑", "I": "心", "J": "肺", "K": "腹", "M": "骨", "N": "泌尿", "O": "盆"}
 BLOCK_ORGAN = {"A15-A19": "肺", "C00-C14": "咽喉", "C15-C26": "腹", "C30-C39": "肺", "C40-C41": "骨", "C50-C50": "乳腺", "C51-C58": "盆", "C60-C63": "泌尿",
                "C64-C68": "泌尿", "C69-C72": "脑", "C73-C75": "颈", "C81-C96": "血液", "D50-D53": "血液", "D55-D59": "血液", "D60-D64": "血液",
-               "D65-D69": "血液", "D70-D77": "血液", "E00-E07": "颈", "G50-G59": "神经", "G60-G64": "神经", "G70-G73": "神经", "I60-I69": "脑",
-               "I70-I79": "血管", "I80-I89": "血管", "J00-J06": "咽喉", "K00-K14": "咽喉", "N60-N64": "乳腺", "N70-N77": "盆", "N80-N98": "盆",
+               "D65-D69": "血液", "D70-D77": "血液", "E00-E07": "颈", "G50-G59": "神经", "G60-G64": "神经", "G70-G73": "神经",
+               "H60-H62": "咽喉", "H65-H75": "咽喉", "I60-I69": "脑",
+               "I70-I79": "血管", "I80-I89": "血管", "J00-J06": "咽喉", "J30-J39": "咽喉", "K00-K14": "咽喉",
+               "M40-M43": "脊柱", "M45-M49": "脊柱", "M50-M54": "脊柱",
+               "N60-N64": "乳腺", "N70-N77": "盆", "N80-N98": "盆",
                "S00-S09": "脑", "S10-S19": "颈", "S20-S29": "肺", "S30-S39": "腹"}
 BLOCK_ORGAN.update({f"S{a}-S{b}": "骨" for a, b in (("40", "49"), ("50", "59"), ("60", "69"), ("70", "79"), ("80", "89"), ("90", "99"))})
 CODE3_ORGAN = {"D10": "咽喉", "D12": "腹", "D13": "腹", "D14": "肺", "D15": "肺", "D16": "骨", "D24": "乳腺", "D25": "盆", "D26": "盆", "D27": "盆",
@@ -106,8 +109,22 @@ CODE3_ORGAN = {"D10": "咽喉", "D12": "腹", "D13": "腹", "D14": "肺", "D15":
 # 0.1.9（审查员第八轮补充）：有创检查只从本诊断的节层以内抽，不拿粗层的当凑数项；一次住院同类有创检查最多一项
 INVASIVE = ("穿刺", "取材", "病理", "造影", "内镜")   # 评测台检查词表的类别（ruler_g2/config/exams.json 的 cls）
 COARSE_LIFT = 1.5
-BARE_REGION = {"脑": "头", "肺": "胸", "腹": "腹", "泌尿": "泌尿", "盆": "盆", "颈": "颈", "乳腺": "乳腺"}
+BARE_REGION = {"脑": "头", "颈": "颈", "肺": "胸", "心": "胸", "腹": "腹", "泌尿": "泌尿", "盆": "盆", "乳腺": "乳腺", "脊柱": "脊柱", "骨": "四肢", "咽喉": "颈"}
 REGIONAL_KEYS = ("CT", "磁共振", "超声", "X线")
+_MODALITY_DEFAULT_REGION = {"CT": "胸", "X线": "胸", "超声": "腹", "磁共振": "头"}
+_NAME_ORGAN_KW = (
+    ("脑", ("脑", "颅内", "脑膜", "胶质")),
+    ("脊柱", ("颈椎", "胸椎", "腰椎", "骶椎", "椎间盘", "脊柱", "椎管")),
+    ("咽喉", ("鼻", "咽", "喉", "扁桃体", "腺样体", "口腔", "舌", "颌", "腮腺", "耳")),
+    ("肺", ("肺", "支气管", "胸膜", "纵隔")),
+    ("腹", ("胃", "结肠", "直肠", "肠", "肝", "胆", "胰", "食管", "腹膜", "阑尾", "脾")),
+    ("乳腺", ("乳腺", "乳房")),
+    ("颈", ("甲状腺", "颈部")),
+    ("盆", ("子宫", "宫颈", "卵巢", "输卵管", "盆腔", "阴道", "外阴")),
+    ("泌尿", ("肾", "输尿管", "膀胱", "前列腺", "尿道")),
+    ("血液", ("白血病", "淋巴瘤", "骨髓瘤", "骨髓增生")),
+    ("骨", ("股骨", "胫骨", "腓骨", "肱骨", "桡骨", "尺骨", "锁骨", "关节", "四肢")),
+)
 
 
 def exam_organ(key, region):
@@ -128,12 +145,16 @@ def code_organ(code3):
 
 def dx_organs(name, code3):
     """诊断所在的器官系统（集合，可能为空）：三位码 → 节 → 章；没有三位码、或三位码是 Z 章（化疗这类住院）时，
-    用公开词典按诊断名查三位码再推。恶性肿瘤另加"全身"（PET、血培养这类全身检查）。"""
+    用公开词典按诊断名查三位码再推。若仍缺具体器官，再按显式解剖关键词兜底。恶性肿瘤另加"全身"。"""
     codes = [code3] if code3 and len(code3) == 3 and not code3.startswith("Z") else []
     if not codes:
         got = icd.code3_exact(name) or icd.code3_stem(name) if name else None
         codes = [got] if got else ([code3] if code3 and not code3.startswith("Z") else [])
     out = {o for o in (code_organ(c) for c in codes) if o}
+    if not (out - {"全身"}) and name:
+        for o, kws in _NAME_ORGAN_KW:
+            if _has_any(name, kws):
+                out.add(o)
     if any(c[:1] == "C" for c in codes):
         out.add("全身")
     return out
@@ -185,7 +206,7 @@ def _has_any(text, words):
 def duration_ok(text, age):
     """病程时长不能比年龄还长：章层的时长表成人儿童混在一起，0.1.4 给儿童配过成人的时长（b7_AGE-HIST）。"""
     m = _DUR.search(text or "")
-    return not m or int(m.group(1)) * _DUR_YEARS[m.group(2)] <= max(age, 1 / 12)
+    return not m or int(m.group(1)) * _DUR_YEARS[m.group(2)] <= max(age, 1 / 365)
 
 
 _INFANT_WORDS = ("哭闹", "拒奶", "吐奶", "吃奶", "奶量", "呛奶", "溢奶", "囟门")
@@ -196,7 +217,7 @@ _ADULT_ONLY_SYM_WORDS = ("胸骨后压榨", "绝经", "前列腺")
 
 
 def sym_ok(sym, p):
-    """0.21.2 / 0.3.2：混龄/混性别/跨孕产层主诉与伴随症状耦合校验。"""
+    """0.21.2 / 0.3.2 / 0.3.4：混龄/混性别/跨孕产层与早孕胎动耦合校验。"""
     s = sym or ""
     if p["age"] >= 6 and _has_any(s, _INFANT_WORDS):
         return False
@@ -208,6 +229,12 @@ def sym_ok(sym, p):
         return False
     if (p["age"] < 12 or p["age"] >= 55) and _has_any(s, _PREG_SYM_WORDS):
         return False
+    if p.get("pregnant") and p.get("gest_weeks") is not None:
+        gw = p["gest_weeks"]
+        if gw < 18 and "胎动" in s:
+            return False
+        if gw < 20 and _has_any(s, ("见红", "宫缩")):
+            return False
     return True
 
 
@@ -323,13 +350,18 @@ def proc_has_exam(proc_name, key):
     return any(w in (proc_name or "") for w in EXAM_IN_PROC.get(key, ()))
 
 
-# 0.1.11（第十次 M2）：取了组织的手术才开术后病理。局部、静脉麻醉或未配麻醉的操作（造影、介入、康复……）不开，名字里写了切除、活检、清宫这类取组织的
-# 除外（肠镜下息肉切除、清宫照开）。0.1.10 冠脉造影后写了"术后病理检查结果符合急性心肌梗死"
-_TISSUE_WORDS = ("切除", "摘除", "活检", "清宫", "刮宫", "剔除", "电切", "剥除", "取材", "息肉", "外剥内扎")
+# 0.1.11（第十次 M2）：取了组织的手术才开术后病理。显式切除/活检/取材类开病理；碎石/取石/内固定/修补/造影/剖宫产等不单独取组织，不开术后病理。
+_TISSUE_WORDS = ("切除", "摘除", "活检", "清宫", "刮宫", "剔除", "电切", "剥除", "取材", "息肉", "外剥内扎", "根治", "截肢")
+_NO_TISSUE_PROC_WORDS = ("碎石", "取石", "内固定", "复位", "修补", "成形", "松解", "剖宫产", "置换", "引流", "造口", "环扎", "置管", "搭桥", "介入", "造影", "消融")
 
 
 def takes_tissue(a):
-    return anesthesia_for(a["name"]) not in ("", "局部麻醉", "静脉麻醉") or _has_any(a["name"], _TISSUE_WORDS)
+    nm = (a or {}).get("name") or ""
+    if _has_any(nm, _TISSUE_WORDS):
+        return True
+    if _has_any(nm, _NO_TISSUE_PROC_WORDS):
+        return False
+    return anesthesia_for(nm) not in ("", "局部麻醉", "静脉麻醉")
 
 
 # 0.1.8：这些诊断不是一种"病"（化疗、复查、术后），检查不写"提示＋诊断名"
@@ -520,27 +552,74 @@ def _sub(stats, name, key):
     return ((stats.get(name) or {}).get(key) or {}).get("items") or {}
 
 
+_NEONATAL_DX_WORDS = ("新生儿", "早产儿", "足月儿", "母乳性黄疸", "脐炎")
+_DEPT_TUMOR_RULES = (
+    (("血液",), ("白血病", "淋巴瘤", "骨髓瘤", "骨髓")),
+    (("妇",), ("宫颈", "子宫", "卵巢", "输卵管", "外阴", "阴道", "绒毛膜", "滋养", "盆腔")),
+    (("乳腺", "甲乳"), ("乳腺", "乳房", "甲状腺")),
+    (("甲状腺",), ("甲状腺",)),
+    (("胃肠", "肛肠", "结直肠", "消化"), ("胃", "结肠", "直肠", "食管", "肠", "肛", "消化")),
+    (("肝胆",), ("肝", "胆", "胰", "壶腹")),
+    (("胸外", "呼吸"), ("肺", "支气管", "食管", "纵隔", "胸膜")),
+    (("泌尿",), ("肾", "膀胱", "前列腺", "输尿管", "尿路上皮", "睾丸")),
+    (("头颈", "耳鼻", "口腔", "颌面"), ("鼻", "咽", "喉", "舌", "口腔", "颌", "腮腺", "甲状腺", "颈")),
+)
+
+
+def _is_neonatal_dx(name, code=""):
+    return (code or "").startswith("P") or _has_any(name, _NEONATAL_DX_WORDS)
+
+
+def _is_specific_cancer(term):
+    """是否为指明具体部位或谱系的原发肿瘤诊断（排除泛称"恶性肿瘤化疗"及"继发恶性肿瘤"）。"""
+    if not _has_any(term, _CANCER_WORDS) or "继发" in (term or ""):
+        return False
+    base = _clean_under(term) or ""
+    return bool(base and base not in ("恶性肿瘤", "手术后恶性肿瘤", "术后恶性肿瘤", "原发恶性肿瘤", "癌症"))
+
+
+def _dept_tumor_ok(dept, term):
+    if not _is_specific_cancer(term):
+        return True
+    d = dept or ""
+    for d_kws, t_kws in _DEPT_TUMOR_RULES:
+        if _has_any(d, d_kws):
+            return _has_any(term, t_kws)
+    if _has_any(term, ("白血病", "骨髓瘤")) and not _has_any(d, ("肿瘤", "放疗", "内科", "儿", "全科", "急诊", "重症", "ICU")):
+        return False
+    return True
+
+
 def dx_ok(name, sex, age):
-    """主诊断、合并症、鉴别诊断都过性别和年龄：slot_filter 加上成人病不给儿童、儿童发育障碍不给成人。"""
+    """主诊断、合并症、鉴别诊断都过性别和年龄：slot_filter 加上成人病不给儿童、儿童发育障碍不给成人、新生儿病不给非新生儿。"""
     if age < 18 and ADULT_DX.search(name):
         return False
     if age >= 18 and _has_any(name, _CHILD_DX_WORDS):
+        return False
+    if age >= 1 / 12 and _has_any(name, ("新生儿", "早产儿", "足月儿")):
+        return False
+    if age < 35 and _has_any(name, ("高龄妊娠", "高龄初产", "高龄经产", "高龄产妇")):
         return False
     return not slot_filter({"dx_name": name, "dx_code3": "", "age": age, "sex": sex})
 
 
 def dept_ok(dept, sex, age, pregnant, code=""):
-    if sex == "男" and _has_any(dept, ("妇", "产")):
+    d = dept or ""
+    if sex == "男" and _has_any(d, ("妇", "产")):
         return False
-    if sex == "女" and "产" in dept and "妇" not in dept and not pregnant:
+    if sex == "男" and "乳腺" in d and ("甲" not in d or age < 30):
         return False
-    if "男科" in dept and sex != "男":
+    if sex == "女" and "产" in d and "妇" not in d and not pregnant:
         return False
-    if age >= 18 and _has_any(dept, ("儿", "新生")):
+    if "男科" in d and sex != "男":
         return False
-    if re.match(r"^N(?:2[0-3]|4\d|5[01])", code or "") and "风湿" in dept:
+    if age >= 18 and _has_any(d, ("儿", "新生")):
         return False
-    return not (age < 14 and "老年" in (dept or ""))
+    if age >= 1 / 12 and "新生" in d:
+        return False
+    if re.match(r"^N(?:2[0-3]|4\d|5[01])", code or "") and "风湿" in d:
+        return False
+    return not (age < 14 and "老年" in d)
 
 
 def side_of(text):
@@ -601,13 +680,17 @@ def fictional_date(jid):
 
 
 def age_text(age):
+    if age < 1 / 12:
+        return f"{max(1, int(round(age * 365)))}天"
     if age < 1:
         return f"{max(1, int(round(age * 12)))}个月"
     return f"{int(age)}岁"
 
 
-def _band_age(rng, band, pregnant=False):
-    """年龄段里抽一个年龄。妊娠只在 15–49 岁抽，和年龄段没有交集时返回 None。"""
+def _band_age(rng, band, pregnant=False, neonatal=False):
+    """年龄段里抽一个年龄。妊娠只在 15–49 岁抽，新生儿诊断只在 0–1 岁段按 3–27 天抽，和年龄段没有交集时返回 None。"""
+    if neonatal:
+        return round(rng.randint(3, 27) / 365, 4) if band == "0-1" else None
     for name, lo, hi in AGE_BANDS:
         if name == band:
             if pregnant:
@@ -674,7 +757,7 @@ def draw_patient(stats, rng, jid, slot=None):
                 continue
             if source in ("chapter", "chapter_stem"):
                 code = ch
-            age = _band_age(rng, band, code.startswith("O") or bool(PREG_NAME.search(name)))
+            age = _band_age(rng, band, code.startswith("O") or bool(PREG_NAME.search(name)), neonatal=_is_neonatal_dx(name, code))
             if age is not None and not slot_filter({"dx_name": name, "dx_code3": code, "age": age, "sex": sex}) and dx_ok(name, sex, age):
                 break
             name = None
@@ -692,6 +775,11 @@ def draw_patient(stats, rng, jid, slot=None):
         if len(raw_comorb) >= MAX_COMORB or term in name or name in term or not dx_ok(term, sex, age):
             return False
         if _is_delivery_dx(term) and not _is_delivery_dx(name):
+            return False
+        if "继发" in term and _has_any(term, _CANCER_WORDS):
+            if not any(_is_specific_cancer(x) for x in [name] + [r for r, _ in raw_comorb]):
+                return False
+        elif _is_specific_cancer(term) and not _dept_tumor_ok(dept, term):
             return False
         if any(term in r_term or r_term in term for r_term, _ in raw_comorb):
             return False
@@ -740,6 +828,16 @@ def draw_patient(stats, rng, jid, slot=None):
                         add_comorb(term)
                 if len(raw_comorb) >= target_c:
                     break
+    if treatment_kind(name, code) in ("化疗", "放疗") and not any(_is_specific_cancer(x) for x in [name] + [r for r, _ in raw_comorb]) and len(raw_comorb) < MAX_COMORB:
+        for s in fine_strata_c:
+            cand = {term: n for term, n in (((stats.get("comorbid") or {}).get(s) or {}).get("items") or {}).items()
+                    if can_comorb(term) and _is_specific_cancer(term)}
+            if cand:
+                z_rng = random.Random(seed_of(jid, "z51_prim_v034"))
+                pick_t = _pick(z_rng, cand)
+                if pick_t:
+                    add_comorb(pick_t)
+                    break
     if rr.get("b3_admissions") and rr.get("b3_permille_sum"):
         real_b3 = rr["b3_permille_sum"] / (rr["b3_admissions"] * 1000.0)
         target_share = min(0.32, max(0.28, real_b3 * 1.18))
@@ -747,9 +845,13 @@ def draw_patient(stats, rng, jid, slot=None):
         p_item = min(0.85, max(0.35, target_share * (1 + len(raw_comorb)) / non_chron_n)) if non_chron_n else 0.0
     else:
         p_item = p_ds_only
+    need_adm_cancer = treatment_kind(name, code) in ("化疗", "放疗") and not _is_specific_cancer(name)
     for term, is_chron in raw_comorb:
         # 0.21（B_B3 提分）：属既往慢病词表的合并症默认入院前即有，切断 ds_only 同步进 past_history 的自抵消
         adm_draw = True if is_chron else (rng.random() >= p_item)
+        if need_adm_cancer and _is_specific_cancer(term):
+            adm_draw = True
+            need_adm_cancer = False
         if not is_chron and ("术后" in term or "产后" in term) and "术后" not in name:
             adm_draw = False
         comorb.append({"name": term, "at_admission": adm_draw})
@@ -1168,19 +1270,44 @@ def realize_surgery(pkey, psource, p, rng, lateral_dx):
     return pname, side, name
 
 
-def dedupe_bare(exams, organs):
-    """0.1.9（审查员第八轮补充）：没写部位的 CT、超声、磁共振、X线，先按诊断器官补部位，补完和已有的重复、或同名检查已有带部位的，就删掉
-    （第八次写出了"胸部CT未见明显异常，CT未见明显异常"）。"""
-    organ = next((o for o in ORGAN_ORDER if o in organs and o in BARE_REGION), None)
+def _bare_region_for(key, organ, age=None, dx_name=""):
+    """0.3.4：按模态与诊断器官选择合规解剖部位前缀；缺具体器官时按模态安全兜底（不再留下裸 CT/超声）。"""
+    if key == "超声":
+        if organ == "心":
+            return "心"
+        if organ == "脑":
+            return "头" if (age is not None and age < 1) else "颈"
+        if organ == "咽喉":
+            return "颈"
+        if organ == "骨":
+            return "四肢"
+        if organ in ("腹", "泌尿", "盆", "颈", "乳腺", "血管"):
+            return organ
+        return "腹"
+    if organ == "咽喉":
+        return "头部" if _has_any(dx_name, ("鼻", "窦", "耳", "乳突", "颌")) else "颈"
+    if organ in BARE_REGION:
+        return BARE_REGION[organ]
+    return _MODALITY_DEFAULT_REGION.get(key)
+
+
+def dedupe_bare(exams, organs, age=None, dx_name=""):
+    """0.1.9 / 0.3.4：没写部位的 CT、超声、磁共振、X线，按检查模态+诊断器官补部位；
+    补完和已有的重复、或原同名检查已有带部位的就去重（避免出现胸部CT和胸部CT并存或四肢超声/胸部CT错配）。"""
+    organ = next((o for o in ORGAN_ORDER if o in organs and (o in BARE_REGION or o == "血管")), None)
     have = {(e["key"], e["region"] if e["region"] in REGION_ORGAN else BENCH_REGION.get(e["region"], e["region"])) for e in exams if e["region"]}
     out = []
     for e in exams:
         if e["key"] in REGIONAL_KEYS and not e["region"]:
-            reg = BARE_REGION.get(organ)
-            if reg and (e["key"], reg) not in have:
-                e["region"], e["name"] = reg, f"{REGION_NAME.get(reg, reg)}{e['key']}"
-                have.add((e["key"], reg))
-            elif reg or any(k == e["key"] for k, _ in have):
+            if organ is None and any(k == e["key"] for k, _ in have):
+                continue
+            reg_txt = _bare_region_for(e["key"], organ, age=age, dx_name=dx_name)
+            reg_code = BENCH_REGION.get(reg_txt, reg_txt) if reg_txt else None
+            if reg_code and (e["key"], reg_code) not in have:
+                disp = REGION_NAME.get(reg_code, reg_code)
+                e["region"], e["name"] = reg_code, f"{disp}{e['key']}"
+                have.add((e["key"], reg_code))
+            else:
                 continue
         out.append(e)
     return out
@@ -1201,7 +1328,13 @@ _DOSE_MG_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(mg|g|毫克|克)\s*$", re.I)
 _PED_MG_PER_KG = {
     "pip_tazo": 112.5, "vancomycin": 20.0, "meropenem": 40.0, "imipenem": 25.0,
     "cefoperazone_sulbactam": 80.0, "ceftriaxone": 80.0, "cefuroxime": 50.0,
-    "levofloxacin": 10.0, "azithromycin": 12.0,
+    "ceftazidime": 50.0, "cefotaxime": 50.0, "cefepime": 50.0, "amox_clav": 45.0,
+    "levofloxacin": 10.0, "azithromycin": 12.0, "metronidazole": 15.0,
+    "methylprednisolone": 2.0, "prednisone": 2.0, "prednisolone": 2.0,
+    "dexamethasone": 0.5, "hydrocortisone": 5.0,
+    "omeprazole": 1.5, "esomeprazole": 1.5, "pantoprazole": 1.5,
+    "ibuprofen": 10.0, "acetaminophen": 15.0,
+    "ambroxol": 1.5, "furosemide": 2.0, "ondansetron": 0.2,
 }
 _PED_EXEMPT_WORDS = ("免疫球蛋白", "丙种球蛋白", "白蛋白", "甘露醇", "葡萄糖", "氯化钠")
 
@@ -1296,6 +1429,8 @@ def plan_meds(stats, rng, p, strata, los):
 
     def usable(did, core):
         if late_preg and (did in ("mifepristone", "misoprostol", "ethacridine") or any(_has_any(a, _ABORTIFACIENT_WORDS) for a in _sub(stats, "med_alias", did))):
+            return False
+        if not antitumor_ok(did, dxt):
             return False
         return (kid_ok is None or did in kid_ok) and (core or indicated(did, dxt, code))
 
@@ -1462,6 +1597,8 @@ def plan_journey(stats, rng, jid, slot=None):
                 return False
         if kind not in INVASIVE:
             return True
+        if key == "病理" and tkind:
+            return False
         grp = "组织" if kind in ("取材", "病理") else kind
         if coarse or grp in used_invasive:
             return False
@@ -1526,7 +1663,7 @@ def plan_journey(stats, rng, jid, slot=None):
             have_keys.add(kk)
             added_kb += 1
             i += 1
-    exams = dedupe_bare(exams, organs)
+    exams = dedupe_bare(exams, organs, age=p["age"], dx_name=under or name)
     if fname and organs and not tkind and not any(
         not e["items"] and diag_eligible(e["key"]) and e["kind"] in ("造影", "内镜", "影像") and site_ok(e["key"], e["region"], organs)
         for e in exams
@@ -1535,6 +1672,7 @@ def plan_journey(stats, rng, jid, slot=None):
             ("心脏超声", "") if "心" in organs else
             ("CT", "头") if "脑" in organs else
             ("CT", "胸") if "肺" in organs else
+            ("磁共振", "脊柱") if "脊柱" in organs else
             next((("超声" if o in ("腹", "泌尿", "盆", "颈", "乳腺") else "CT", BARE_REGION[o])
                   for o in ORGAN_ORDER if o in organs and o in BARE_REGION), (None, None))
         )

@@ -33,7 +33,7 @@ from .safe import SafeError, guarded, log
 
 MAX_SECTION_TRIES = 3
 MAX_DOC_REWRITES = 2
-VERSION = "s1-pipeline-0.3.3"  # 0.33：S4 反事实前缀非预期性收口、对称认识论消融（--ablate-epistemic）与首轮成文留存（--save-first-try）
+VERSION = "s1-pipeline-0.3.4"  # 0.34：临床防穿帮微封口（非手术切口/未分娩产褥/器官映像与部位补全/Z51跨科肿瘤过滤/儿童与新生儿约束）
 PE_EXCERPT, SPEC_EXCERPT = 300, 60   # 0.1.11：出院记录"入院情况"的摘录 120 → 300 字（第十次合成病历 M6，阳性体征在 120 字以后）
 PE_REF = 400                         # 0.1.11：专科情况提示里给的体格检查全文上限
 _SENT_END = "。！？!?"

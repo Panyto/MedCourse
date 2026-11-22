@@ -106,12 +106,20 @@ def organ_pe_facts(j, d):
 
     if p.get("pregnant"):
         gw = p.get("gest_weeks") or 38
-        pe = (
-            f"心肺听诊未见明显异常，腹隆，宫底高度与停经{gw}周妊娠相符，"
-            + (f"可及宫缩，伴{sym_str}表现，" if syms else "胎心音规整，")
-            + "双下肢无明显水肿"
-        )
-        spec = f"宫高腹围符合孕{gw}周，胎心音正常，专科检查与{safe_dx}相符"
+        if gw < 14 or _has_any(raw_dx, ("异位妊娠", "宫外孕", "葡萄胎", "胚胎停", "稽留流产")):
+            abd = f"下腹部轻压痛，无反跳痛，伴{sym_str}表现" if syms else "腹平软，下腹部无明显压痛"
+            pe = f"心肺听诊未见明显异常，{abd}，双下肢无明显水肿"
+            spec = f"妇产科专科查体与停经{gw}周及{safe_dx}相符，无大量活动性阴道流血"
+        elif gw < 20:
+            pe = f"心肺听诊未见明显异常，下腹微隆，宫底高度与停经{gw}周妊娠相符，双下肢无明显水肿"
+            spec = f"宫底高度符合孕{gw}周，专科检查与{safe_dx}相符"
+        else:
+            pe = (
+                f"心肺听诊未见明显异常，腹隆，宫底高度与停经{gw}周妊娠相符，"
+                + (f"可及宫缩，伴{sym_str}表现，" if syms else "胎心音规整，")
+                + "双下肢无明显水肿"
+            )
+            spec = f"宫高腹围符合孕{gw}周，胎心音正常，专科检查与{safe_dx}相符"
         return pe, spec
 
     if "阑尾" in raw_dx:
@@ -130,7 +138,7 @@ def organ_pe_facts(j, d):
         return pe, spec
 
     if _has_any(raw_dx, ("脑梗", "脑出血", "偏瘫", "卒中", "帕金森")) or "脑" in organs or "神经" in organs:
-        focal = "病侧肢体肌力减退" if _has_any(sym_str, ("乏力", "偏瘫", "无力", "麻木")) else "神经系统定位体征与主诉相符"
+        focal = "病侧肢体肌力减退" if _has_any(sym_str, ("乏力", "偏瘫", "无力", "麻木")) else "神经系统定位体征与病情相符"
         pe = f"神志清楚，双侧瞳孔等大等圆，对光反射灵敏，{focal}，心肺腹查体未见明显异常"
         spec = f"神志清楚，颅神经及肢体肌力、肌张力、病理征检查与{safe_dx}定位表现一致"
         return pe, spec
@@ -153,7 +161,7 @@ def organ_pe_facts(j, d):
             pe = f"心肺听诊未见明显异常，腹平软，{loc}肾区叩击痛阳性，输尿管走行区轻压痛"
             spec = f"{loc}脊肋角及肾区叩击痛阳性，下腹部及会阴部无明显异常"
         else:
-            pe = f"心肺腹查体未见明显异常，{target}局部查体存在与主诉相符的阳性体征"
+            pe = f"心肺腹查体未见明显异常，{target}局部查体存在相应阳性体征"
             spec = f"{p['dept']}专科查体见{target}局部相应体征"
         return pe, spec
 
@@ -177,7 +185,10 @@ def organ_pe_facts(j, d):
         pe = f"神志清楚，查体合作，全身浅表淋巴结未触及肿大，查体见与{sym_str}相符的阳性体征"
     else:
         pe = "浅表淋巴结未触及肿大，心肺腹查体未见明显异常"
-    spec = f"{p['dept']}专科查体与{'主要症状' if syms else safe_dx}相符"
+    if p["primary_dx"].get("treatment") and not syms:
+        spec = f"{p['dept']}专科查体未见新发局部异常体征"
+    else:
+        spec = f"{p['dept']}专科查体与{'主要症状' if syms else safe_dx}相符"
     return pe, spec
 
 

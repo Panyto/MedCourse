@@ -35,7 +35,7 @@ nonsurg_postop：非手术住院写了"术后恢复""手术顺利"这类话。�
 import datetime as dt
 import re
 
-from .compiler import no_incision
+from .compiler import _INC_SKIP_SECTIONS, _has_delivery_event, no_incision
 from .rules import setup
 from .stats import PAST_TERMS, past_matches
 
@@ -144,11 +144,13 @@ _BEFORE_OP_EXEMPT = re.compile(
 )
 _ENG_PROSE = re.compile(r"(?<![A-Za-z0-9-])([A-Za-z]{4,}(?:\s+[A-Za-z]{4,})+)(?![A-Za-z0-9-])")
 _META_TEXT = re.compile(r"(?:记录|病程)(?:完整|真实)|无遗漏|内容真实|符合(?:病历)?书写规范")
-_INCISION_WORDS = ("切口", "引流")
+_INCISION_WORDS = ("切口", "刀口", "引流")
+_POSTPARTUM_WORDS = ("恶露", "乳汁", "哺乳", "产后恢复", "产褥")
 _ADULT_CHRON_WORDS = ("高血压", "糖尿病", "冠心病", "冠状动脉粥样硬化", "脑梗死", "脑卒中", "慢阻肺", "慢性阻塞性肺", "房颤", "心房颤动")
 _GENERIC_PAST_DENY_WORDS = ("否认高血压", "既往无特殊", "既往体健", "无高血压")
 FIXABLE = ("truncated", "repeat", "nonsurg_postop", "pe_history", "hint_leak", "pe_result", "result_unsourced", "dx_settled_early",
-           "pe_untested", "pe_dup_vitals", "senior_in_daily", "before_op_done", "no_incision_leak", "english_prose", "meta_text", "past_contradict", "future_date")
+           "pe_untested", "pe_dup_vitals", "senior_in_daily", "before_op_done", "no_incision_leak", "undelivered_postpartum", "early_preg_fetal",
+           "english_prose", "meta_text", "past_contradict", "future_date")
 PIPELINE_SAFE_FIX = ("truncated", "repeat", "english_prose", "meta_text", "hint_leak")
 
 # 0.2.0（M1 严格档 B 2/1023，老板 11-11 批准）：诊断定论提前（dx_settled_early）。词表自己写，不 import 评测台的 oracle2（闸门和记分牌分家）。
@@ -395,6 +397,10 @@ def check_section(plan, text):
         fails.append("before_op_done")
     if plan.get("no_incision") and _has_any(text, _INCISION_WORDS):
         fails.append("no_incision_leak")
+    if plan.get("undelivered_preg") and _has_any(text, _POSTPARTUM_WORDS):
+        fails.append("undelivered_postpartum")
+    if plan.get("early_preg") and "胎动" in (text or ""):
+        fails.append("early_preg_fetal")
     if plan.get("result_keys") is not None and result_mentions(text, set(plan["result_keys"])):
         fails.append("result_unsourced")
     if plan.get("unsettled_dx") and settled_dx_mentions(text, plan["unsettled_dx"], plan.get("settled_dx") or ()):
@@ -466,7 +472,7 @@ def copy_safe(plan, sent):
     """0.21：apply_copy 拷入前先过同一份章节禁区，避免把术日未做的已手术句/无切口术式的切口句/英文或元话语拷进下一篇。"""
     if not sent:
         return False
-    sub = {k: plan[k] for k in ("role", "nonsurgical", "before_op", "no_incision", "unsettled_dx", "settled_dx", "result_keys") if k in plan}
+    sub = {k: plan[k] for k in ("role", "nonsurgical", "before_op", "no_incision", "undelivered_preg", "early_preg", "unsettled_dx", "settled_dx", "result_keys") if k in plan}
     sub["target_chars"] = 0
     sub["facts"] = ()
     return not [f for f in check_section(sub, sent) if f != "number_unsourced"]
@@ -546,6 +552,10 @@ def repair_section(text, fails, plan=None):
             t = "密切观察病情变化。"
     if "no_incision_leak" in fails:
         t = _drop_clauses_if(t, lambda c: _has_any(c.group(0), _INCISION_WORDS))
+    if "undelivered_postpartum" in fails:
+        t = _drop_clauses_if(t, lambda c: _has_any(c.group(0), _POSTPARTUM_WORDS))
+    if "early_preg_fetal" in fails:
+        t = _drop_clauses_if(t, lambda c: "胎动" in c.group(0))
     if "english_prose" in fails:
         t = _ENG_PROSE.sub("", t)
         t = re.sub(r"[（(]\s*[）)]", "", t)
@@ -685,10 +695,11 @@ def check_admission(j, docs):
     for k in sorted(future_leak(j, docs)):
         fails.append((k, "future_result"))
     s_procs = [a for a in (j.get("procedures") or ()) if a.get("kind") == "手术"]
+    dx_name = (j.get("patient") or {}).get("primary_dx", {}).get("name") or ""
     if s_procs:
         op_d0 = s_procs[0]["do_day"]
         post_k = next((x["k"] for x in docs if x.get("role") == "POST"), None)
-        all_no_inc = all(no_incision(a) for a in s_procs)
+        all_no_inc = all(no_incision(a) for a in s_procs) and not _has_any(dx_name + "".join(a.get("name") or "" for a in s_procs), _INCISION_WORDS)
         for d in docs:
             role = d.get("role")
             is_pre_op = (d["day_offset"] < op_d0) or (d["day_offset"] == op_d0 and post_k is not None and d["k"] < post_k)
@@ -702,4 +713,23 @@ def check_admission(j, docs):
                     fails.append((d["k"], "postop_day_mismatch"))
             if all_no_inc and role in ("POST", "SUP", "DAILY", "DS") and _has_any(d["text"], _INCISION_WORDS):
                 fails.append((d["k"], "no_incision_leak"))
+    elif not _has_any(dx_name, _INCISION_WORDS):
+        for d in docs:
+            role = d.get("role")
+            if role in ("SUP", "DAILY"):
+                if _has_any(d["text"], _INCISION_WORDS):
+                    fails.append((d["k"], "no_incision_leak"))
+            elif role in ("HR", "DS"):
+                secs = [s for s in split_sections(d["text"]) if s.name not in _INC_SKIP_SECTIONS]
+                if any(_has_any(s.text, _INCISION_WORDS) for s in secs):
+                    fails.append((d["k"], "no_incision_leak"))
+    if (j.get("patient") or {}).get("pregnant"):
+        if not _has_delivery_event(j, s_procs, include_all_comorb=True):
+            for d in docs:
+                if d.get("role") in ("SUP", "DAILY", "DS") and _has_any(d["text"], _POSTPARTUM_WORDS):
+                    fails.append((d["k"], "undelivered_postpartum"))
+        if (j["patient"].get("gest_weeks") or 38) < 18:
+            for d in docs:
+                if "胎动" in d["text"]:
+                    fails.append((d["k"], "early_preg_fetal"))
     return fails

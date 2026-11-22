@@ -217,7 +217,24 @@ HINT_DIFF = "患者的表现只写上面给出的主诉，不要把鉴别疾病�
 HINT_DISCUSS = "依据只写上面列出的症状和检查，没有列出的检查不写。"
 # 0.1.11（第十次合成病历 M6）：体格检查不再当事实给（写手照抄成专科情况），整段放进提示只作对照（流程补在这句后面）；
 # 专科情况只写专科部位。0.1.10 只给前 120 字，后面的阳性体征（"指套染血"）没进来，专科情况写成了"指诊未触及明显肿块"
-HINT_SPEC = "只写本专科部位的查体，不重复抄写体格检查；和同一篇的体格检查一致，不写相反的体征；不写化验、心电图和影像结果。"
+HINT_SPEC = "只写本专科部位的查体，不重复抄写心肺腹等全身常规查体；和同一篇的体格检查一致，不写相反的体征；不写病史、化验、心电图和影像结果。"
+
+
+_DELIVERY_PROC_WORDS = ("剖宫产", "分娩", "顺产", "助产", "产钳", "胎头吸引", "臀位")
+_ABORT_PROC_WORDS = ("清宫", "刮宫", "流产")
+_INC_SKIP_SECTIONS = ("现病史", "既往史", "个人史", "婚育史", "月经史", "家族史")
+_INC_TOKENS = ("切口", "刀口", "引流")
+
+
+def _has_delivery_event(j, done_ops, include_all_comorb=False):
+    p = j["patient"]
+    comorbs = [c["name"] for c in p["comorbidities"] if include_all_comorb or c["at_admission"]]
+    dx_terms = [p["primary_dx"]["name"]] + comorbs
+    return any(
+        _has_any(x, ("活产", "死产", "死胎", "顺产", "难产", "分娩", "产钳", "胎头吸引", "臀位牵引", "产后", "产褥"))
+        or ("会阴" in x and "裂伤" in x)
+        for x in dx_terms
+    ) or any(_has_any(a["name"], _DELIVERY_PROC_WORDS) for a in done_ops)
 
 
 def _dx_line(names):
@@ -497,7 +514,14 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
             facts.append(_fact("symptom", f"{syms}{TREND_TEXT.get(d['trend'], '')}"))
         elif j["chief"].get("category") == "obstetric":
             done_chk, _ = op_state(j, spec, specs)
-            facts.append(_fact("symptom", "产后子宫收缩好，恶露量少" if done_chk else "目前胎动正常，无阴道流血及阵发性腹痛"))
+            if any(_has_any(a["name"], _DELIVERY_PROC_WORDS) for a in done_chk):
+                facts.append(_fact("symptom", "产后子宫收缩好，恶露量少"))
+            elif any(_has_any(a["name"], _ABORT_PROC_WORDS) for a in done_chk):
+                facts.append(_fact("symptom", "术后阴道流血量少，无腹痛及发热"))
+            elif (p.get("gest_weeks") or 38) >= 18:
+                facts.append(_fact("symptom", "目前胎动正常，无阴道流血及阵发性腹痛"))
+            else:
+                facts.append(_fact("symptom", "目前无阴道流血增多及阵发性下腹痛"))
         # 0.1.9：一般情况按真实病程的比例给（精神睡眠饮食、二便），用事实代替套话
         ng = stats.get("note_general") or {}
         if rng.random() < (ng.get("精神睡眠饮食") or 0):
@@ -510,6 +534,18 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
             # 0.1.9：写"阳性体征较前好转"，不写"咳嗽相关体征"（0.1.8 被原样写出 35 处）；不按症状另配部位表
             facts.append(_fact("exam", f"查体：阳性体征{TREND_TEXT.get(d['trend'], '')}"))
         facts += [_result_fact(e, True) for e in j["exams"] if prev < e["result_day"] <= day]
+        if epistemic:
+            focus_texts = {t for _, t in focus}
+            for x in j["dx_events"]:
+                if prev < x["day"] <= day and x["state"] in ("确诊", "排除") and x["day"] > 0:
+                    c_txt, e_txt = f"结合检查结果，{x['name']}诊断明确", f"结合检查结果，排除{x['name']}"
+                    if c_txt in focus_texts or e_txt in focus_texts:
+                        for ff in facts:
+                            if ff["kind"] == "focus" and x["name"] in ff["text"]:
+                                ff["must"], ff["key"] = True, x["name"]
+                    else:
+                        dx_txt = c_txt if x["state"] == "确诊" else f"结合检查结果，已排除{x['name']}"
+                        facts.append(_fact("dx", dx_txt, True, x["name"]))
         # 0.1.9 / 0.30：手术当天术后首程之前的病程算还没做；术后病程显式传入精确“术后第K天”必写事实与硬校验天数
         done, pending = op_state(j, spec, specs)
         facts += [_fact("procedure", _proc_done_phrase(a, "今日"), True, a["name"]) for a in done if a["do_day"] == day]
@@ -634,6 +670,10 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
     done_ops, pending_ops = op_state(j, spec, specs)
     known_ops = done_ops + pending_ops
     all_no_incision = bool(known_ops and all(no_incision(a) for a in known_ops))
+    name_has_inc = _has_any(p["primary_dx"]["name"] + "".join(a["name"] for a in known_ops), _INC_TOKENS)
+    no_open_op_done = (not done_ops) or all(no_incision(a) for a in done_ops)
+    undelivered_preg = bool(p.get("pregnant") and not _has_delivery_event(j, done_ops, include_all_comorb=(role == "DS")))
+    early_preg = bool(p.get("pregnant") and (p.get("gest_weeks") or 38) < 18)
     cday_str = doc_date(j, day)
     for pl in plans:
         pl["k"], pl["day"], pl["role"] = spec["k"], day, role
@@ -644,10 +684,24 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
             pl["nonsurgical"] = True
         if pl["mode"] == "llm" and not done_ops and (role in COURSE + ("PRE", "FP") or (role == "HR" and pl["section"] not in ("现病史", "既往史"))):
             pl["before_op"] = True
-        if pl["mode"] == "llm" and all_no_incision:
-            pl["no_incision"] = True
-            if role in ("POST", "SUP", "DAILY", "DS"):
+        if pl["mode"] == "llm" and not name_has_inc and no_open_op_done:
+            if role in ("POST", "SUP", "DAILY", "DS") or (role == "HR" and pl["section"] in ("体格检查", "专科情况")):
+                pl["no_incision"] = True
+            if all_no_incision and role in ("POST", "SUP", "DAILY", "DS"):
                 pl["hint"] = ((pl["hint"] + " ") if pl.get("hint") else "") + "本术式为无切口内镜或介入操作，不写切口、缝合、拆线或引流管。"
+            elif not known_ops and "外" in p["dept"]:
+                if role == "HR" and pl["section"] in ("体格检查", "专科情况"):
+                    pl["hint"] = ((pl["hint"] + " ") if pl.get("hint") else "") + "当前未行手术，查体不写手术刀口、切口缝合或术后改变。"
+                elif role in ("SUP", "DAILY", "DS"):
+                    pl["hint"] = ((pl["hint"] + " ") if pl.get("hint") else "") + "患者当前未行手术，不写手术刀口、切口缝合或引流管。"
+        if pl["mode"] == "llm" and undelivered_preg and pl["section"] not in ("既往史", "婚育史"):
+            pl["undelivered_preg"] = True
+            if role in ("SUP", "DAILY", "DS"):
+                pl["hint"] = ((pl["hint"] + " ") if pl.get("hint") else "") + "患者当前尚未分娩，不写产后恢复、恶露、乳汁分泌或哺乳。"
+        if pl["mode"] == "llm" and early_preg and pl["section"] not in ("既往史", "婚育史"):
+            pl["early_preg"] = True
+            if role in ("SUP", "DAILY", "DS"):
+                pl["hint"] = ((pl["hint"] + " ") if pl.get("hint") else "") + "当前孕周不足18周，尚未出现胎动，不写胎动或规律宫缩。"
         if pl["mode"] == "llm" and any(f.get("kind") == "result" for f in pl.get("facts") or ()):
             ex_scope = j["exams"] if pl["section"] == "诊疗经过" else (visible(j, 0 if pl.get("admission_only") else day)["results"])
             abn_keys = sorted({
@@ -805,7 +859,7 @@ def apply_copy(text, prev_text, budget, rng, banned=(), diag=None, banned_meds=N
     return "".join(sents[:at]) + "".join(chosen) + "".join(sents[at:]), added
 
 
-_CARRY_ORDER_WORDS = ("完善", "进一步明确", "明确诊断", "明确病理", "送检", "建议行")
+_CARRY_ORDER_WORDS = ("完善", "进一步明确", "明确诊断", "明确病理", "送检", "建议行", "给予", "予以")
 
 
 def pick_carry_fact(prev_text, j, spec, prev_day, stats, rng, banned=(), safe_fn=None):
