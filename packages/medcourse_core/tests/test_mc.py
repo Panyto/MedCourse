@@ -2049,9 +2049,9 @@ class TestV019(unittest.TestCase):
         self.assertGreater(before, 0)
         self.assertGreater(after, 0)
         self.assertTrue(0.15 < general / notes < 0.5, general / notes)
-        self.assertIn("穿刺点", compiler.postop_watch({"anesthesia": "局部麻醉"}, 1))
-        self.assertNotIn("切口", compiler.postop_watch({"anesthesia": "局部麻醉"}, 4))
-        self.assertIn("切口", compiler.postop_watch({"anesthesia": "全身麻醉"}, 1))
+        self.assertIn("穿刺点", compiler.postop_watch({"name": "冠状动脉造影术", "anesthesia": "局部麻醉"}, 1))
+        self.assertNotIn("切口", compiler.postop_watch({"name": "冠状动脉造影术", "anesthesia": "局部麻醉"}, 4))
+        self.assertIn("切口", compiler.postop_watch({"name": "腹腔镜胆囊切除术", "anesthesia": "全身麻醉"}, 1))
         slot = {"slot_id": "PCI1", "sex": "男", "age": 62, "dept": "心内科", "dx_name": "冠状动脉粥样硬化性心脏病", "dx_code3": "I25", "los": 5,
                 "surgical": True, "surgery_day": 2, "procedure": "经皮冠状动脉支架植入术"}
         j, specs, st2, rng = make("PCI1", 3, slot, st)
@@ -2774,7 +2774,7 @@ class TestV01121(unittest.TestCase):
 
         class Rec(writer.TemplateWriter):
             def write(self, j, spec, pl, seed):
-                seen.append((spec["role"], spec["day"], pl.get("result_keys"), j))
+                seen.append((spec["role"], spec["day"], spec.get("time"), pl.get("admission_only"), pl.get("result_keys"), j, specs))
                 text = super().write(j, spec, pl, seed)
                 if spec["role"] in ("SUP", "DAILY"):
                     text = text.rstrip("。") + "。脑电图示未见明显异常。"       # 规划里没有的检查，写成已回报
@@ -2782,6 +2782,8 @@ class TestV01121(unittest.TestCase):
 
         tally, n = {}, 0
         for i in range(30):
+            j = planner.plan_journey(st, random.Random(planner.seed_of(20261102, f"RU{i:03d}")), f"RU{i:03d}")
+            specs = planner.schedule(j, st, random.Random(planner.seed_of(20261102, f"RU{i:03d}"))) if j else []
             j, docs, fails = pipeline.generate_one(f"RU{i:03d}", st, Rec(), 20261102, None, tally)
             if docs is None:
                 continue
@@ -2790,12 +2792,14 @@ class TestV01121(unittest.TestCase):
                 self.assertNotIn("脑电图示", d["text"], d["doc_type_cn"])
         self.assertGreater(n, 10)
         self.assertGreater(tally.get("sec_result_unsourced_repaired", 0), 0)
-        for role, day, keys, j in seen:
+        for role, day, tm, adm_only, keys, j, sp in seen:
             if role == "DS":
                 self.assertIsNone(keys)
             else:
-                vis = {e["key"] for e in j["exams"] if e["result_day"] <= day}
-                self.assertTrue(vis <= set(keys), (role, day))
+                hr_hm = next((s.get("time") for s in sp if s["role"] == "HR" and s.get("time")), "23:59")
+                cut = (0, hr_hm) if adm_only else (day, tm or "23:59")
+                vis = {e["key"] for e in j["exams"] if compiler.exam_ts(e) <= cut}
+                self.assertTrue(vis <= set(keys), (role, day, tm))
 
     def test_template_has_no_unsourced(self):
         st = fixtures_mc.stats()
@@ -2803,7 +2807,7 @@ class TestV01121(unittest.TestCase):
         for i in range(60):
             pipeline.generate_one(f"RT{i:03d}", st, writer.TemplateWriter(), 20261102, None, tally)
         self.assertEqual(tally.get("sec_result_unsourced", 0), 0, {k: v for k, v in tally.items() if k.startswith("sec_")})
-        self.assertEqual(pipeline.VERSION, "s1-pipeline-0.3.4")
+        self.assertEqual(pipeline.VERSION, "s1-pipeline-0.3.7")
 
 
 class TestV0113(unittest.TestCase):
@@ -3400,6 +3404,7 @@ class TestV021Prep(unittest.TestCase):
         self.assertEqual(rows.get("dup_graded_dx", -1), 0)
         w = writer.TemplateWriter()
         b3_vals = []
+        ds_only_grounded = 0
         for i in range(60):
             j, docs, _ = pipeline.generate_one(f"B3T_{i:04d}", st, w, 20261117, None, {})
             if docs is None:
@@ -3408,11 +3413,16 @@ class TestV021Prep(unittest.TestCase):
             for c in p["comorbidities"]:
                 if any(past_matches(pt, c["name"]) for pt in PAST_TERMS):
                     self.assertTrue(c["at_admission"], c)
+                if not c["at_admission"]:
+                    ds_only_grounded += 1
+                    self.assertGreaterEqual(c.get("discover_day", 0), 1, c)
+                    self.assertTrue(c.get("evidence_ids"), c)
             val = evaluate_admission(build_real({"admission_id": f"B3T_{i:04d}", "docs": docs}))["readings"]["B3"]["value"]
             if val is not None:
                 b3_vals.append(val)
         self.assertGreaterEqual(len(b3_vals), 50)
-        self.assertGreaterEqual(sum(b3_vals) / len(b3_vals), 0.24)
+        self.assertGreaterEqual(ds_only_grounded, 15)
+        self.assertLessEqual(sum(b3_vals) / len(b3_vals), 0.10)
 
     def test_copy5_bridges_fp_pre_post_and_caps_cross_repeat(self):
         from ruler_g2 import build_real, evaluate_admission
@@ -4619,6 +4629,544 @@ class TestV034ClinicalAntiHallucination(unittest.TestCase):
         body = next(x for x in pls if x["section"] == "正文")
         dx_facts = [f for f in body["facts"] if f.get("key") == j["patient"]["primary_dx"]["name"] and "诊断明确" in f["text"]]
         self.assertTrue(dx_facts and dx_facts[0]["must"])
+
+
+class TestV035GeneratorAuditFixes(unittest.TestCase):
+    """0.3.5：证据驱动诊断更新、手术决定依据可见性、日内 (day, hm) 可见序、术式切口剖面、极性/硬拒收门控、新增合并症锚定、用药与单位元组绑定及级联重写。"""
+
+    def test_dx_events_and_ds_only_and_surgical_decide_grounded(self):
+        st = fixtures_mc.stats()
+        st_b = kb.build_b_only_stats()
+        checked_excl = checked_conf = checked_ds_only = checked_surg = 0
+        for pool in (st, st_b):
+            for i in range(40):
+                j, specs, _, _ = make(f"V35G-{id(pool)}-{i}", 100 + i, None, pool)
+                self.assertEqual(planner.check_plan(j, specs), [])
+                ex_by_id = {e["id"]: e for e in j["exams"]}
+                proc_by_id = {a["id"]: a for a in j["procedures"]}
+                recheck_ids = {e["id"] for e in j["exams"] if e.get("recheck") and all(x["flag"] == "正常" for x in e.get("items", []))}
+                for ev in j["dx_events"]:
+                    if ev["day"] >= 1 and ev["state"] in ("确诊", "排除"):
+                        eids = ev.get("evidence_ids") or []
+                        self.assertTrue(eids, ev)
+                        self.assertTrue(ev.get("basis_text"), ev)
+                        for eid in eids:
+                            src = ex_by_id.get(eid) or proc_by_id.get(eid)
+                            self.assertIsNotNone(src, eid)
+                            if eid in ex_by_id:
+                                self.assertLessEqual(src["result_day"], ev["day"])
+                                if src["result_day"] == ev["day"] and ev.get("hm") and src.get("result_hm"):
+                                    self.assertLessEqual(src["result_hm"], ev["hm"])
+                        if ev["state"] == "排除":
+                            checked_excl += 1
+                            self.assertTrue(all(eid not in recheck_ids for eid in eids))
+                        elif not ev.get("newly_discovered"):
+                            checked_conf += 1
+                            self.assertTrue(all(eid not in recheck_ids for eid in eids))
+                for c in j["patient"]["comorbidities"]:
+                    if not c["at_admission"]:
+                        checked_ds_only += 1
+                        self.assertGreaterEqual(len(c.get("evidence_ids") or ()), 1)
+                        self.assertGreaterEqual(c.get("discover_day", 0), 0)
+                if j["surgical"] and j["procedures"]:
+                    checked_surg += 1
+                    a0 = j["procedures"][0]
+                    diag_preop = [e for e in j["exams"] if e.get("diagnostic") and not e.get("with_proc") and e["result_day"] <= a0["do_day"]]
+                    if diag_preop:
+                        self.assertGreaterEqual(a0["decide_day"], min(e["result_day"] for e in diag_preop))
+        self.assertGreater(checked_surg, 0)
+
+    def test_intraday_visibility_and_future_leak_subday(self):
+        st = fixtures_mc.stats()
+        j, _, _, _ = make("V35TM", 7, None, st)
+        j["los"] = max(j["los"], 3)
+        j["surgical"] = False
+        j["procedures"] = []
+        pname = j["patient"]["primary_dx"]["name"]
+        j["exams"] = [
+            {"id": "e1", "key": "血常规", "region": None, "name": "血常规", "kind": "检验",
+             "order_day": 0, "order_hm": "07:30", "result_day": 0, "result_hm": "07:30",
+             "items": [{"item": "白细胞", "key": "WBC", "value": "11.2", "unit": "×10^9/L", "flag": "偏高"}]},
+            {"id": "e2", "key": "CT", "region": "胸", "name": "胸部CT", "kind": "影像",
+             "order_day": 1, "order_hm": "08:15", "result_day": 1, "result_hm": "14:20",
+             "items": [], "abnormal": True, "diagnostic": True, "finding": f"符合{pname}表现"},
+        ]
+        j["dx_events"] = [
+            {"id": "d1", "name": pname, "day": 0, "hm": "07:30", "state": "疑似", "evidence_ids": []},
+            {"id": "d2", "name": pname, "day": 1, "hm": "14:20", "state": "确诊", "evidence_ids": ["e2"], "basis_text": "结合胸部CT结果"},
+        ]
+        specs = [
+            {"k": 0, "day": 0, "role": "HR", "doc_type": "hospital_record", "doc_type_cn": "入院记录", "time": "08:30"},
+            {"k": 1, "day": 0, "role": "FP", "doc_type": "progress_note", "doc_type_cn": "首次病程记录", "time": "09:40"},
+            {"k": 2, "day": 1, "role": "SUP", "doc_type": "progress_note", "doc_type_cn": "主治医师查房记录", "time": "09:00"},
+            {"k": 3, "day": 1, "role": "DAILY", "doc_type": "progress_note", "doc_type_cn": "日常病程记录", "time": "15:30"},
+            {"k": 4, "day": 3, "role": "DS", "doc_type": "discharge_summary", "doc_type_cn": "出院记录", "time": "10:00"},
+        ]
+        pl_sup = next(x for x in compiler.compile_doc(j, specs[2], specs, st, random.Random(3), epistemic=True) if x["section"] == "正文")
+        pl_daily = next(x for x in compiler.compile_doc(j, specs[3], specs, st, random.Random(3), epistemic=True) if x["section"] == "正文")
+        sup_txt = " ".join(f["text"] for f in pl_sup["facts"])
+        daily_txt = " ".join(f["text"] for f in pl_daily["facts"])
+        self.assertIn("尚待进一步明确", sup_txt)
+        self.assertIn("已开具胸部CT", sup_txt)
+        self.assertNotIn("胸部CT示", sup_txt)
+        self.assertNotIn("诊断明确", sup_txt)
+        self.assertIn("胸部CT示", daily_txt)
+        self.assertIn("结合胸部CT结果", daily_txt)
+        self.assertIn("诊断明确", daily_txt)
+        bad_docs = [{"k": 2, "role": "SUP", "doc_type": "progress_note", "day_offset": 1, "time": "09:00",
+                     "text": f"2025-05-02 09:00\n胸部CT示符合{pname}表现。"}]
+        self.assertIn(2, gate.future_leak(j, bad_docs))
+
+    def test_proc_profile_no_incision_and_post_op_state(self):
+        self.assertFalse(compiler.no_incision({"name": "局麻下皮下肿物切除术", "anesthesia": "局部麻醉"}))
+        self.assertFalse(compiler.no_incision({"name": "局麻下皮肤脓肿切开引流术", "anesthesia": "局部麻醉"}))
+        self.assertFalse(compiler.no_incision({"name": "未知新操作XYZ", "anesthesia": ""}))
+        self.assertFalse(compiler.no_incision({"name": "经皮肾镜碎石取石术", "anesthesia": "全身麻醉"}))
+        self.assertEqual(planner.anesthesia_for("经皮肾镜碎石取石术"), "全身麻醉")
+        self.assertTrue(compiler.no_incision({"name": "冠状动脉造影术", "anesthesia": "局部麻醉"}))
+        self.assertTrue(compiler.no_incision({"name": "经尿道右侧输尿管软镜钬激光碎石取石术", "anesthesia": "腰硬联合麻醉"}))
+        self.assertIn("穿刺通道", compiler.postop_watch({"name": "经皮肾镜碎石取石术", "anesthesia": "全身麻醉"}, 1))
+
+        st = copy.deepcopy(fixtures_mc.stats())
+        slot = {"slot_id": "POST35", "sex": "女", "age": 50, "dept": "普外科", "dx_name": "胆囊结石伴急性胆囊炎",
+                "dx_code3": "K80", "los": 5, "surgical": True, "surgery_day": 1, "procedure": "腹腔镜胆囊切除术"}
+        j, specs, _, rng = make("POST35", 5, slot, st)
+        post_spec = next(s for s in specs if s["role"] == "POST")
+        post_pls = compiler.compile_doc(j, post_spec, specs, st, rng)
+        for pl in post_pls:
+            if pl["mode"] == "llm":
+                self.assertFalse(pl.get("no_incision"), pl)
+
+    def test_polarity_gate_orthography_past_and_hard_reject(self):
+        dx_pl = {"section": "正文", "role": "SUP", "target_chars": 5, "facts": [
+            {"kind": "dx", "text": "结合胸部CT结果，肺炎诊断明确", "must": True, "key": "肺炎", "req_dx_polarity": "确诊", "values": []}
+        ]}
+        self.assertIn("dx_polarity_missing", gate.check_section(dx_pl, "肺炎仍待排，继续观察。"))
+        self.assertEqual(gate.check_section(dx_pl, "结合胸部CT结果，肺炎诊断明确。"), [])
+        self.assertEqual(gate.check_section(dx_pl, "复查后明确诊断肺炎。"), [])
+
+        # Orthography & direct numeric result tone + past_contradict non-HTN chronic patient
+        res_pl = {"section": "正文", "role": "SUP", "target_chars": 5, "allowed": ["0.32", "18.5"],
+                  "allowed_pairs": [["0.32", "mg/l"], ["18.5", "mg/l"]],
+                  "facts": [{"kind": "result", "text": "D二聚体示：D二聚体0.32mg/L", "must": True, "key": "D二聚体", "values": ["0.32"]},
+                            {"kind": "result", "text": "C反应蛋白示：C反应蛋白18.5mg/L（偏高）", "must": True, "key": "C反应蛋白", "values": ["18.5"]}]}
+        self.assertEqual(gate.check_section(res_pl, "D-二聚体0.32mg/L，C反应蛋白18.5mg/L偏高。"), [])
+
+        past_pl = {"section": "既往史", "known_past": ["糖尿病"], "child_past": False, "target_chars": 5, "facts": []}
+        self.assertEqual(gate.check_section(past_pl, "既往有糖尿病病史，否认高血压、冠心病等慢性病史。"), [])
+        self.assertIn("past_contradict", gate.check_section(past_pl, "既往有糖尿病病史，否认糖尿病、高血压病史。"))
+
+        # Hard-reject guarantee: 4 consecutive polarity misses cause pipeline.generate_one to reject (docs=None)
+        class StubbornPolarityFailWriter(writer.TemplateWriter):
+            splice_copy = False
+            def write(self, j, spec, plan, attempt):
+                for f in plan.get("facts") or ():
+                    if f.get("req_dx_polarity"):
+                        return f"{f['key']}仍待排，继续观察病情变化。"
+                return super().write(j, spec, plan, attempt)
+
+        st = fixtures_mc.stats()
+        from unittest import mock
+        tally = {}
+        with mock.patch.object(pipeline.planner, "P_DX_CHANGE", 1.0):
+            j, docs, fails = pipeline.generate_one("REJ35", st, StubbornPolarityFailWriter(), 20261210, None, tally)
+        self.assertIsNone(docs)
+        self.assertTrue(any(c.startswith("hard_sec_") for c in fails), fails)
+
+    def test_unit_tuple_med_compat_and_cascade_rewrite(self):
+        pl = {"section": "正文", "target_chars": 5, "allowed": ["11.5"], "allowed_pairs": [["11.5", "10^9/l"]], "facts": []}
+        self.assertEqual(gate.check_section(pl, "白细胞11.5×10^9/L。"), [])
+        self.assertIn("number_unsourced", gate.check_section(pl, "血肌酐11.5μmol/L。"))
+
+        self.assertFalse(planner._med_route_form_ok("aspirin", "阿司匹林肠溶片", "100mg", "静滴"))
+        self.assertTrue(planner._med_route_form_ok("aspirin", "阿司匹林肠溶片", "100mg", "口服"))
+        self.assertFalse(planner._med_route_form_ok("ceftriaxone", "注射用头孢曲松钠", "2g", "口服"))
+
+        # Rewrite cascade: when upstream note k=2 rewrites, downstream note k>2 also cascades and rewrites
+        st = copy.deepcopy(fixtures_mc.stats())
+        st["los"] = {"*": {"n": 100, "items": {"5": 100}}}
+        st["notes_per_day"] = {"q": [1.5] * 5}
+        calls_by_role = []
+
+        class CascadeTestWriter(writer.TemplateWriter):
+            splice_copy = False
+
+            def write(self, j, spec, plan, attempt):
+                calls_by_role.append((spec["k"], spec["role"], attempt, [f["text"] for f in plan["facts"] if f["kind"] == "carry"]))
+                if spec["role"] == "SUP" and spec["k"] == 2 and attempt < 10:
+                    later_ex = next((e for e in j["exams"] if e["result_day"] > spec["day"] and e["items"]), None)
+                    if later_ex:
+                        it = later_ex["items"][0]
+                        return super().write(j, spec, plan, attempt) + f"{it['item']}{it['value']}{it['unit']}。旧稳定延续句。"
+                return super().write(j, spec, plan, attempt)
+
+        verified_cas = False
+        for seed in range(25):
+            jid_cas = f"CAS{seed}"
+            rng_p = random.Random(planner.seed_of(seed, jid_cas))
+            jt = planner.plan_journey(st, rng_p, jid_cas, None)
+            if jt is None:
+                continue
+            spt = planner.schedule(jt, st, rng_p)
+            sup_k = next((s["k"] for s in spt if s["role"] == "SUP"), None)
+            if sup_k == 2 and any(s["k"] > 2 and s["role"] in ("SUP", "DAILY") for s in spt) and any(e["result_day"] > spt[2]["day"] and e["items"] for e in jt["exams"]):
+                calls_by_role.clear()
+                cw = CascadeTestWriter()
+                _, docs, fails = pipeline.generate_one(jid_cas, st, cw, seed, None, {})
+                self.assertEqual(fails, [], (seed, fails))
+                self.assertIsNotNone(docs)
+                down_ks = [k for k, r, att, _ in calls_by_role if k > 2 and r in ("SUP", "DAILY") and att >= 10]
+                self.assertTrue(down_ks, calls_by_role)
+                verified_cas = True
+                break
+        self.assertTrue(verified_cas)
+
+
+class TestV036ReviewerBCounterexamples(unittest.TestCase):
+    """0.3.6：针对审稿人 B 全部生成端与门控反例的回归测试（全部使用虚构/人工构造输入）。"""
+
+    def test_wrong_site_excl_and_guideline_rules(self):
+        # 1) 肺炎 + 正常头颅CT 不得用于排除诊断（删除跨部位 `or imaging` 旁路）
+        exams_wrong_site = [
+            {"id": "e1", "key": "CT", "region": "头", "name": "头颅CT", "kind": "影像",
+             "order_day": 0, "result_day": 1, "items": [], "abnormal": False, "diagnostic": False},
+        ]
+        ev, basis = planner._pick_excl_evidence("社区获得性肺炎", {"肺"}, exams_wrong_site, los=4)
+        self.assertIsNone(ev)
+        self.assertIsNone(basis)
+
+        # 2) NICE CG188: 正常腹部超声不能直接排除胆总管结石；正常 MRCP 才可排除
+        exams_us = [
+            {"id": "e1", "key": "超声", "region": "腹", "name": "腹部超声", "kind": "影像",
+             "order_day": 0, "result_day": 1, "items": [], "abnormal": False, "diagnostic": False},
+        ]
+        self.assertEqual(planner._pick_excl_evidence("胆总管结石", {"腹"}, exams_us, los=4), (None, None))
+        exams_mrcp = [
+            {"id": "e2", "key": "MRCP", "region": "腹", "name": "MRCP", "kind": "影像",
+             "order_day": 0, "result_day": 1, "items": [], "abnormal": False, "diagnostic": False},
+        ]
+        ev_m, basis_m = planner._pick_excl_evidence("胆总管结石", {"腹"}, exams_mrcp, los=4)
+        self.assertEqual(ev_m["id"], "e2")
+        self.assertIn("MRCP", basis_m)
+
+        # 3) NICE CG95 / NG158: 静息心电图不排除心绞痛，D-二聚体阴性不作为单一排除肺栓塞依据
+        exams_ecg_dd = [
+            {"id": "e3", "key": "心电图", "region": None, "name": "心电图", "kind": "功能",
+             "order_day": 0, "result_day": 1, "items": [], "abnormal": False, "diagnostic": False},
+            {"id": "e4", "key": "D二聚体", "region": None, "name": "D二聚体", "kind": "检验",
+             "order_day": 0, "result_day": 1, "items": [{"item": "D-二聚体", "key": "DD", "value": "0.21", "unit": "mg/L", "flag": "正常"}],
+             "abnormal": False, "diagnostic": False},
+        ]
+        self.assertEqual(planner._pick_excl_evidence("心绞痛", {"心"}, exams_ecg_dd, los=4), (None, None))
+        self.assertEqual(planner._pick_excl_evidence("肺栓塞", {"肺"}, exams_ecg_dd, los=4), (None, None))
+
+        # 4) TIA/缺血语境下，正常头颅CT 可排除脑出血，但不能排除脑梗死
+        exams_head = [
+            {"id": "e5", "key": "CT", "region": "头", "name": "头颅CT", "kind": "影像",
+             "order_day": 0, "result_day": 1, "items": [], "abnormal": False, "diagnostic": False},
+        ]
+        ev_h, _ = planner._pick_excl_evidence("脑出血", {"脑"}, exams_head, los=4)
+        self.assertEqual(ev_h["id"], "e5")
+        self.assertEqual(planner._pick_excl_evidence("脑梗死", {"脑"}, exams_head, los=4), (None, None))
+
+    def test_all_positive_entries_and_neoplasm_cap(self):
+        # 1) 非形态学/不可检出诊断（阿尔茨海默病、先兆早产、脑疾患）在 High-Lift / guaranteed / fallback 全入口一律被拦截
+        st_hi = copy.deepcopy(fixtures_mc.stats())
+        st_hi["exams"]["*"]["n"] = 100
+        st_hi["exams"]["*"]["items"].update({"CT|头": 10, "超声|盆": 10})
+        st_hi["exams"]["G30"] = {"n": 10, "items": {"CT|头": 9}}
+        st_hi["exams"]["O60"] = {"n": 10, "items": {"超声|盆": 9}}
+        self.assertEqual(planner.exam_lifts(st_hi, ["G30", "*"], {"脑"}, fname="阿尔茨海默病"), {})
+        self.assertEqual(planner.exam_lifts(st_hi, ["O60", "*"], {"盆"}, fname="先兆早产"), {})
+        self.assertIsNone(planner.ensure_diagnostic(st_hi, ["G30", "*"], [], "阿尔茨海默病", {"脑"}))
+
+        ex_ad = [{"id": "e1", "key": "CT", "region": "头", "name": "头颅CT", "kind": "影像", "items": [], "abnormal": False, "guaranteed": True}]
+        planner.mark_exam_findings(st_hi, ["G30", "*"], ex_ad, "阿尔茨海默病", {"脑"})
+        self.assertFalse(ex_ad[0]["diagnostic"] or ex_ad[0]["abnormal"] or bool(ex_ad[0].get("can_confirm")))
+        ex_g93 = [{"id": "e2", "key": "CT", "region": "头", "name": "头颅CT", "kind": "影像", "items": [], "abnormal": False, "guaranteed": True}]
+        planner.mark_exam_findings(st_hi, ["G93", "*"], ex_g93, "未特指脑疾患", {"脑"})
+        self.assertFalse(ex_g93[0]["diagnostic"] or ex_g93[0]["abnormal"])
+
+        # 2) 肿瘤影像/内镜仅写占位/新生物，can_confirm=False；器官/术式匹配病理才可确诊
+        ex_ca = [
+            {"id": "e1", "key": "CT", "region": "腹", "name": "腹部CT", "kind": "影像", "order_day": 0, "result_day": 1, "items": [], "abnormal": False},
+            {"id": "e2", "key": "肠镜", "region": None, "name": "肠镜", "kind": "内镜", "order_day": 0, "result_day": 1, "items": [], "abnormal": False},
+            {"id": "e3", "key": "超声", "region": "心", "name": "心脏超声", "kind": "影像", "order_day": 0, "result_day": 1, "items": [], "abnormal": False},
+        ]
+        planner.mark_exam_findings({}, ["*"], [ex_ca[0]], "结肠恶性肿瘤", {"腹"})
+        self.assertEqual(ex_ca[0]["finding"], "可见占位性病变")
+        self.assertFalse(ex_ca[0]["can_confirm"])
+        planner.mark_exam_findings({}, ["*"], [ex_ca[1]], "结肠恶性肿瘤", {"腹"})
+        self.assertEqual(ex_ca[1]["finding"], "可见黏膜新生物，待病理明确")
+        self.assertFalse(ex_ca[1]["can_confirm"])
+        self.assertEqual(planner._primary_confirm_cands(ex_ca[:2], "结肠恶性肿瘤"), [])
+
+        # 心肌梗死 + 心脏超声仅表达室壁运动异常且不可单独确诊
+        planner.mark_exam_findings({}, ["*"], [ex_ca[2]], "急性心肌梗死", {"心"})
+        self.assertEqual(ex_ca[2]["finding"], "可见节段性室壁运动异常")
+        self.assertFalse(ex_ca[2]["can_confirm"])
+
+        # I25（及 ICD 类目“慢性缺血性心脏病”）不得标为心脏超声/动态心电图/动态血压诊断阳性；M51 坐骨神经痛不误杀脊柱磁共振
+        for i25_lbl in ("冠状动脉粥样硬化性心脏病", planner.finding_label("冠状动脉粥样硬化性心脏病", "I25")):
+            ex_i25 = [
+                {"id": "c1", "key": "心脏超声", "region": None, "name": "心脏超声", "kind": "影像", "items": [], "abnormal": False, "guaranteed": True},
+                {"id": "c2", "key": "超声", "region": "心", "name": "心脏超声", "kind": "影像", "items": [], "abnormal": False},
+                {"id": "c3", "key": "动态心电图", "region": None, "name": "动态心电图", "kind": "功能", "items": [], "abnormal": False, "guaranteed": True},
+                {"id": "c4", "key": "动态血压", "region": None, "name": "动态血压", "kind": "功能", "items": [], "abnormal": False, "guaranteed": True},
+            ]
+            planner.mark_exam_findings({}, ["*"], ex_i25, i25_lbl, {"心"})
+            self.assertFalse(any(e["diagnostic"] for e in ex_i25), (i25_lbl, ex_i25))
+        ex_m51 = [{"id": "m1", "key": "磁共振", "region": "脊柱", "name": "脊柱磁共振", "kind": "影像", "items": [], "abnormal": False}]
+        planner.mark_exam_findings({}, ["*"], ex_m51, "腰椎间盘突出伴坐骨神经痛", {"脊柱"})
+        self.assertTrue(ex_m51[0]["diagnostic"] and ex_m51[0]["can_confirm"])
+
+        # 病理取材匹配检验：右半结肠切除术后病理放行；部位错配病理、胃镜活检(肺/胃)与骨科术后病理拦截
+        p_match = {"id": "p1", "key": "病理", "region": None, "name": "术后病理", "kind": "病理", "order_day": 1, "result_day": 2, "items": []}
+        p_wrong = copy.deepcopy(p_match)
+        p_wrong_reg = {"id": "p2", "key": "活检", "region": "胸", "name": "胸壁活检", "kind": "取材", "order_day": 1, "result_day": 2, "items": []}
+        planner.mark_exam_findings({}, ["*"], [p_match], "结肠恶性肿瘤", {"腹"}, procedures=[{"id": "a1", "name": "腹腔镜右半结肠切除术"}])
+        self.assertTrue(p_match["can_confirm"])
+        self.assertEqual(p_match["finding"], "符合结肠恶性肿瘤")
+        planner.mark_exam_findings({}, ["*"], [p_wrong], "结肠恶性肿瘤", {"腹"}, procedures=[{"id": "a1", "name": "股骨骨折切开复位内固定术"}])
+        self.assertFalse(p_wrong["can_confirm"])
+        self.assertFalse(p_wrong["diagnostic"])
+        planner.mark_exam_findings({}, ["*"], [p_wrong_reg], "结肠恶性肿瘤", {"腹"})
+        self.assertFalse(p_wrong_reg["can_confirm"])
+        self.assertFalse(p_wrong_reg["diagnostic"])
+
+    def test_comorbidity_direction_obstetric_and_status_dx(self):
+        # 1) 低钾血症遇到高钾(5.8 偏高)直接丢弃，不倒改 at_admission=True，不入 dx_events，并记录于 comorb_ledger
+        p = {
+            "sex": "男", "age": 55,
+            "primary_dx": {"name": "急性胆囊炎", "code3": "K81"},
+            "comorbidities": [{"name": "低钾血症", "at_admission": False}, {"name": "高血压", "at_admission": True}],
+        }
+        exams = [{
+            "id": "e1", "key": "电解质", "region": None, "name": "电解质", "kind": "检验",
+            "order_day": 0, "result_day": 1, "result_hm": "11:20",
+            "items": [{"item": "血钾", "key": "K", "value": "5.8", "unit": "mmol/L", "flag": "偏高"}],
+        }]
+        dx_events = []
+        _, ledger = planner._ground_inpatient_comorbidities(p, 5, exams, [], dx_events, 2)
+        self.assertEqual([c["name"] for c in p["comorbidities"]], ["高血压"])
+        self.assertEqual(dx_events, [])
+        self.assertEqual(ledger["ungrounded_inpatient_dropped"], 1)
+        self.assertEqual(ledger["dropped_names"], ["低钾血症"])
+
+        # 2) 女性+胆囊切除 / 清宫 不得绑定产后状态；仅真实分娩术式才可绑定
+        for bad_proc in ("腹腔镜胆囊切除术", "清宫术"):
+            pf = {"sex": "女", "age": 28, "comorbidities": [{"name": "产后状态", "at_admission": False}]}
+            dxe = []
+            _, lg = planner._ground_inpatient_comorbidities(pf, 4, [], [{"id": "a1", "name": bad_proc, "do_day": 1, "do_hm": "13:00"}], dxe, 2)
+            self.assertEqual(pf["comorbidities"], [], bad_proc)
+            self.assertEqual(lg["dropped_names"], ["产后状态"], bad_proc)
+        pf_ok = {"sex": "女", "age": 28, "comorbidities": [{"name": "产后状态", "at_admission": False}]}
+        dxe_ok = []
+        _, lg_ok = planner._ground_inpatient_comorbidities(pf_ok, 4, [], [{"id": "a1", "name": "子宫下段剖宫产术", "do_day": 1, "do_hm": "13:00"}], dxe_ok, 2)
+        self.assertEqual([c["name"] for c in pf_ok["comorbidities"]], ["产后状态"])
+        self.assertEqual(dxe_ok[0]["evidence_ids"], ["a1"])
+
+        # 3) 状态词识别与不整章屏蔽 O 章：O44 前置胎盘 + 盆腔超声可从疑似转为确诊；剖宫产史不入疑似
+        st_o = copy.deepcopy(fixtures_mc.stats())
+        st_o["joint"]["items"] = {"女|18-40|O": 100}
+        st_o["code3"]["O"] = {"n": 100, "items": {"O44": 100}}
+        st_o["dx_names"]["O44"] = {"n": 100, "items": {"前置胎盘": 100}}
+        st_o["los"]["O44"] = {"n": 100, "items": {"4": 100}}
+        st_o["dept"]["O44"] = {"n": 100, "items": {"产科": 100}}
+        st_o["exams"]["O44"] = {"n": 100, "items": {"超声|盆": 95}}
+        st_o["exams"]["*"]["items"]["超声|盆"] = 20
+        st_o["exam_days"]["超声|盆"] = {"1": 100}
+        st_o["chief_symptoms"]["O44"] = {"n": 100, "items": {"阴道流血": 100}}
+        st_o["symptoms"]["O44"] = {"n": 100, "items": {"阴道流血": 100}}
+        from unittest import mock
+        with mock.patch.object(planner, "P_DX_CHANGE", 1.0):
+            j_o44 = planner.plan_journey(st_o, random.Random(1), "O44_TEST")
+        o44_states = [d["state"] for d in j_o44["dx_events"] if d["name"] == "前置胎盘"]
+        self.assertEqual(o44_states, ["疑似", "确诊"])
+
+        st_st = copy.deepcopy(st_o)
+        st_st["dx_names"]["O44"] = {"n": 100, "items": {"瘢痕子宫": 100}}
+        with mock.patch.object(planner, "P_DX_CHANGE", 1.0):
+            j_sc = planner.plan_journey(st_st, random.Random(1), "SCAR_TEST")
+        sc_states = [d["state"] for d in j_sc["dx_events"] if d["name"] == "瘢痕子宫"]
+        self.assertEqual(sc_states, ["确诊"])
+
+    def test_contract_021_med_hm_order_and_visible_cutoff(self):
+        st = fixtures_mc.stats()
+        for i in range(15):
+            j, specs, _, _ = make(f"HM{i}", 100 + i, None, st)
+            self.assertEqual(j["contract"], contract.CONTRACT_VERSION)
+            self.assertEqual(contract.validate_journey(j), [])
+            for m in j["meds"]:
+                if m["start_day"] == m["stop_day"]:
+                    self.assertLessEqual(m["start_hm"], m["stop_hm"])
+
+        # 合同校验拦截倒置 start_hm > stop_hm 及缺失 evidence_ids（并放行历史合同）
+        bad_j, _, _, _ = make("BAD021", 5, None, st)
+        bad_j["meds"] = [{"id": "m1", "name": "阿司匹林", "start_day": 1, "stop_day": 1, "start_hm": "11:30", "stop_hm": "08:30"}]
+        bad_j["dx_events"] = [{"id": "d1", "name": "肺炎", "day": 1, "hm": "09:00", "state": "确诊", "evidence_ids": []}]
+        errs = contract.validate_journey(bad_j)
+        self.assertIn("med_hm_order", errs)
+        self.assertIn("dx_missing_evidence", errs)
+        leg_j = copy.deepcopy(bad_j)
+        leg_j["contract"] = "mc-contract-0.2"
+        del leg_j["dx_events"][0]["evidence_ids"]
+        self.assertNotIn("dx_missing_evidence", contract.validate_journey(leg_j))
+
+        # stop_hm 细粒度可见性：stop_day=2, stop_hm=08:30 时，10:00 后不得再可见也不得拷入续用
+        vis_j = {"los": 5, "exams": [], "procedures": [], "dx_events": [],
+                 "meds": [{"id": "m1", "name": "头孢曲松", "dose": "2g", "freq": "qd", "route": "静滴",
+                           "start_day": 0, "start_hm": "07:30", "stop_day": 2, "stop_hm": "08:30"}]}
+        self.assertEqual([m["name"] for m in compiler.visible(vis_j, (2, "08:00"))["meds"]], ["头孢曲松"])
+        self.assertEqual(compiler.visible(vis_j, (2, "10:00"))["meds"], [])
+        self.assertIn("头孢曲松", compiler.inactive_meds(vis_j, (2, "10:00")))
+
+    def test_gate_item_num_swap_units_dates_and_stale_trap(self):
+        roles = {
+            "DD": {"item": "D-二聚体", "unit": "mg/l", "latest": "0.4", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "CRP": {"item": "C反应蛋白", "unit": "mg/l", "latest": "42.6", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "INR": {"item": "INR", "unit": "", "latest": "1.09", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "PT": {"item": "凝血酶原时间", "unit": "s", "latest": "12.9", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "HBA1C": {"item": "糖化血红蛋白", "unit": "%", "latest": "6.5", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "HGB": {"item": "血红蛋白", "unit": "g/l", "latest": "125", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "WBC": {"item": "白细胞", "unit": "10^9/l", "latest": "9.2", "priors": ["14.5"], "latest_day": 3, "is_ds_course": False},
+            "PLT": {"item": "血小板", "unit": "10^9/l", "latest": "246", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "CKMB": {"item": "肌酸激酶同工酶", "unit": "u/l", "latest": "9", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "CK": {"item": "肌酸激酶", "unit": "u/l", "latest": "27", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "TBIL": {"item": "总胆红素", "unit": "umol/l", "latest": "23.9", "priors": [], "latest_day": 0, "is_ds_course": False},
+        }
+        pl = {"section": "正文", "target_chars": 5, "allowed": ["0.4", "42.6", "1.09", "12.9", "6.5", "125", "9.2", "14.5", "8", "23", "246", "9", "27", "23.9"],
+              "allowed_pairs": [["0.4", "mg/l"], ["42.6", "mg/l"], ["1.09", ""], ["12.9", "s"], ["6.5", "%"], ["125", "g/l"],
+                                ["9.2", "10^9/l"], ["14.5", "10^9/l"], ["246", "10^9/l"], ["9", "u/l"], ["27", "u/l"], ["23.9", "umol/l"]],
+              "lab_item_roles": roles, "facts": []}
+
+        # 1) 实体与数值张冠李戴，以及总胆红素错写 mmol/L 均必拦截
+        self.assertIn("item_number_mismatch", gate.check_section(pl, "D-二聚体42.6mg/L，C反应蛋白0.4mg/L。"))
+        self.assertIn("item_number_mismatch", gate.check_section(pl, "肝功能示总胆红素23.9mmol/L。"))
+
+        # 2) 合法格式：INR 无单位、秒->s、中文/ISO日期、中文单位、并列“分别为”、分期/分型及“近3个月”不误报
+        ok_txt = (
+            "2025-08-23查INR1.09，凝血酶原时间12.9秒；8月23日复查糖化血红蛋白6.5%（提示近3个月2型糖尿病控制可），"
+            "血红蛋白125g/L，血小板计数246×10^9/升，白细胞9.2×10^9/L升高，肌酸激酶同工酶及肌酸激酶分别为9U/L、27U/L，"
+            "D-二聚体0.4mg/L，CRP42.6mg/L，合并慢性肾脏病5期。"
+        )
+        self.assertEqual(gate.check_section(pl, ok_txt), [])
+
+        # 3) 审稿人 B 明确指出的旧值陷阱与合法对比表达
+        self.assertIn("item_stale_value", gate.check_section(pl, "入院时白细胞14.5×10^9/L，目前复查仍为14.5×10^9/L。"))
+        self.assertIn("item_stale_value", gate.check_section(pl, "今日复查血常规白细胞14.5×10^9/L。"))
+        self.assertEqual(gate.check_section(pl, "入院时白细胞14.5×10^9/L，今日复查白细胞9.2×10^9/L较前下降。"), [])
+        self.assertEqual(gate.check_section(pl, "血常规示：白细胞14.5×10^9/L。复查血常规示：白细胞9.2×10^9/L。"), [])
+
+
+class TestV037ReviewerBCounterexamples(unittest.TestCase):
+    """0.3.7：闭合式阳性检查能力白名单与“分别为”顺序配对/歧义阻断验证（全人工构造反例）。"""
+
+    def test_closed_positive_capability_and_subsite_guards(self):
+        # 1) 审稿人 B 核心反例：急性阑尾炎 + 胃镜（同归“腹”、无 Lift），必须阻断阳性与确诊候选
+        gastro_app = [
+            {"id": "e1", "key": "胃镜", "region": "腹", "name": "胃镜", "kind": "内镜",
+             "order_day": 1, "result_day": 1, "result_hm": "11:00", "items": [], "abnormal": False}
+        ]
+        planner.mark_exam_findings({}, ["*"], gastro_app, "急性阑尾炎", {"腹"})
+        self.assertFalse(gastro_app[0]["abnormal"])
+        self.assertFalse(gastro_app[0]["diagnostic"])
+        self.assertNotIn("finding", gastro_app[0])
+        self.assertIsNone(gastro_app[0].get("can_confirm"))
+        self.assertEqual(planner._primary_confirm_cands(gastro_app, "急性阑尾炎"), [])
+
+        # 2) 远端 3,020 扫描实测出的同类跨亚部位 / 非形态学错配全阻断，合法组合保留
+        cases_blocked = [
+            ("胃镜", "内镜", "", "胆总管结石伴胆管炎", {"腹"}),
+            ("肠镜", "内镜", "", "胆囊结石伴胆囊炎", {"腹"}),
+            ("胃镜", "内镜", "", "肠梗阻", {"腹"}),
+            ("肠镜", "内镜", "", "肠梗阻", {"腹"}),
+            ("胃镜", "内镜", "", "结肠恶性肿瘤", {"腹"}),
+            ("超声", "影像", "血管", "出血性内痔", {"血管", "腹"}),
+            ("CT", "影像", "腹", "腰椎骨折", {"脊柱", "腹"}),
+            ("超声", "影像", "腹", "新生儿高胆红素血症", {"腹"}),
+            ("CT", "影像", "头", "右侧偏瘫", {"脑"}),
+            ("CT", "影像", "头", "椎基底动脉综合征", {"脑"}),
+            ("磁共振", "影像", "头", "椎基底动脉综合征", {"脑"}),
+            ("CT", "影像", "胸", "慢性阻塞性肺病伴有急性加重", {"肺"}),
+            ("超声", "影像", "盆", "子宫非炎性疾患", {"盆"}),
+            ("超声", "影像", "颈", "甲状腺疾患", {"颈"}),
+        ]
+        for k, kind, reg, dxn, orgs in cases_blocked:
+            ex = [{"id": "x1", "key": k, "region": reg or None, "name": k, "kind": kind,
+                   "order_day": 1, "result_day": 1, "items": [], "abnormal": False, "guaranteed": True}]
+            planner.mark_exam_findings({}, ["*"], ex, dxn, orgs)
+            self.assertFalse(ex[0]["diagnostic"] or ex[0]["abnormal"] or bool(ex[0].get("can_confirm")),
+                             (k, reg, dxn, ex[0]))
+
+        # 病理不得因“子宫非炎性疾患”含“炎”字而放行
+        ex_path_noninf = {"id": "p1", "key": "活检", "region": "盆", "name": "子宫活检", "kind": "取材",
+                          "order_day": 1, "result_day": 2, "items": []}
+        self.assertFalse(planner._pathology_can_confirm(ex_path_noninf, "子宫非炎性疾患", {"盆"}))
+
+        # 合法精确匹配仍放行
+        ex_ok = [
+            {"id": "ok1", "key": "CT", "region": "腹", "name": "腹部CT", "kind": "影像", "order_day": 1, "result_day": 1, "items": [], "abnormal": False},
+            {"id": "ok2", "key": "胃镜", "region": "", "name": "胃镜", "kind": "内镜", "order_day": 1, "result_day": 1, "items": [], "abnormal": False},
+            {"id": "ok3", "key": "肠镜", "region": "", "name": "肠镜", "kind": "内镜", "order_day": 1, "result_day": 1, "items": [], "abnormal": False},
+            {"id": "ok4", "key": "肺功能", "region": "", "name": "肺功能", "kind": "功能", "order_day": 1, "result_day": 1, "items": [], "abnormal": False, "guaranteed": True},
+        ]
+        planner.mark_exam_findings({}, ["*"], [ex_ok[0]], "急性阑尾炎", {"腹"})
+        self.assertTrue(ex_ok[0]["can_confirm"] and ex_ok[0]["finding"] == "符合急性阑尾炎表现")
+        planner.mark_exam_findings({}, ["*"], [ex_ok[1]], "急性十二指肠溃疡", {"腹"})
+        self.assertTrue(ex_ok[1]["can_confirm"] and ex_ok[1]["finding"] == "符合急性十二指肠溃疡表现")
+        planner.mark_exam_findings({}, ["*"], [ex_ok[2]], "结肠恶性肿瘤", {"腹"})
+        self.assertTrue(ex_ok[2]["diagnostic"] and not ex_ok[2]["can_confirm"])
+        planner.mark_exam_findings({}, ["*"], [ex_ok[3]], "慢性阻塞性肺病伴有急性加重", {"肺"})
+        self.assertTrue(ex_ok[3]["diagnostic"] and not ex_ok[3]["can_confirm"] and ex_ok[3]["finding"] == "可见异常改变")
+
+        # 3) finding_label 不把胆总管结石篡改成胆囊结石；_clean_under 清理“介入治疗”及前缀“手术后”
+        self.assertNotIn("胆囊", planner.finding_label("胆总管结石伴急性胆管炎", "K80"))
+        self.assertEqual(planner.finding_label("胆总管结石伴胆管炎", "K80"), "胆总管结石")
+        self.assertEqual(planner._clean_under("恶性肿瘤介入治疗"), "恶性肿瘤")
+        self.assertEqual(planner._clean_under("手术后恶性肿瘤化学治疗"), "恶性肿瘤")
+
+    def test_gate_respectively_ordered_pairing_and_ambiguity(self):
+        roles = {
+            "DD": {"item": "D-二聚体", "unit": "mg/l", "latest": "0.4", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "CRP": {"item": "C反应蛋白", "unit": "mg/l", "latest": "42.6", "priors": [], "latest_day": 0, "is_ds_course": False},
+            "WBC": {"item": "白细胞", "unit": "10^9/l", "latest": "9.2", "priors": ["14.5"], "latest_day": 3, "is_ds_course": False},
+            "HGB": {"item": "血红蛋白", "unit": "g/l", "latest": "125", "priors": [], "latest_day": 3, "is_ds_course": False},
+        }
+        pl = {
+            "section": "正文", "target_chars": 5, "facts": [], "lab_item_roles": roles,
+            "allowed": ["0.4", "42.6", "9.2", "14.5", "125", "4.2"],
+            "allowed_pairs": [["0.4", "mg/l"], ["42.6", "mg/l"], ["9.2", "10^9/l"], ["14.5", "10^9/l"], ["125", "g/l"], ["4.2", "10^12/l"]],
+        }
+
+        # 1) 审稿人 B 核心反例：正确的“分别为”应解析 parsed=2, fails=[]
+        r_ok = gate.audit_item_numbers(pl, "D-二聚体及C反应蛋白分别为0.4mg/L、42.6mg/L。")
+        self.assertEqual(r_ok["fails"], [])
+        self.assertEqual((r_ok["parsed"], r_ok["unparsed"]), (2, 0))
+        self.assertEqual(gate.check_section(pl, "D-二聚体及C反应蛋白分别为0.4mg/L、42.6mg/L。"), [])
+
+        # 2) 互换数值后的“分别为”必须精准拦截为 item_number_mismatch，绝不能跳过
+        r_swap = gate.audit_item_numbers(pl, "D-二聚体及C反应蛋白分别为42.6mg/L、0.4mg/L。")
+        self.assertIn("item_number_mismatch", r_swap["fails"])
+        self.assertEqual((r_swap["parsed"], r_swap["unparsed"]), (2, 0))
+        self.assertEqual({h[1] for h in r_swap["hits"]}, {"DD", "CRP"})
+        self.assertEqual(gate.check_section(pl, "D-二聚体及C反应蛋白分别为42.6mg/L、0.4mg/L。"), ["item_number_mismatch"])
+
+        # 3) “分别为”中混入复查旧值也必须检出 item_stale_value
+        r_stale = gate.audit_item_numbers(pl, "今日复查白细胞及血红蛋白分别为14.5×10^9/L、125g/L。")
+        self.assertIn("item_stale_value", r_stale["fails"])
+        self.assertEqual(r_stale["parsed"], 2)
+
+        # 4) 项目与数值无法一一对应的“分别为”必须计入 unparsed 并触发 item_parallel_ambiguous 阻断与重写引导
+        r_amb_cnt = gate.audit_item_numbers(pl, "D-二聚体、C反应蛋白及白细胞分别为0.4mg/L、42.6mg/L。")
+        self.assertIn("item_parallel_ambiguous", r_amb_cnt["fails"])
+        self.assertEqual((r_amb_cnt["parsed"], r_amb_cnt["unparsed"]), (0, 3))
+        self.assertTrue(r_amb_cnt["unparsed_details"])
+        r_amb_unk = gate.audit_item_numbers(pl, "红细胞及白细胞分别为4.2×10^12/L、9.2×10^9/L。")
+        self.assertIn("item_parallel_ambiguous", r_amb_unk["fails"])
+        self.assertEqual(r_amb_unk["unparsed"], 1)
+        self.assertIn("item_parallel_ambiguous", gate.HARD_SECTION_FAILS)
+        self.assertIn("item_parallel_ambiguous", writer.RETRY_GUIDANCE)
 
 
 if __name__ == "__main__":

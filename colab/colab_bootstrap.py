@@ -51,6 +51,7 @@ def setup_env(repo_root=None) -> dict:
         pkgs / "bench_core",
         pkgs / "gm_tools",
         pkgs / "gold_kit",
+        pkgs / "s5_kit",
     ]
     for p in reversed(py_roots):
         sp = str(p)

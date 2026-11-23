@@ -13,7 +13,10 @@ Segment、EventRecord  L1 抽取的切片和抽取结果，S2 产出，S3 配成
 已排除（excluded）单列，待排归疑似（uncertain）；多一个"不是这个病人"（not_patient）。下游建统计表、金标抽题只用 CORE_TYPES
 里状态不是 not_patient 的事件。v1 的事件（rule_out）由 extract.normalize 换成新状态。
 """
-CONTRACT_VERSION = "mc-contract-0.2"
+import re
+
+CONTRACT_VERSION = "mc-contract-0.2.1"
+LEGACY_CONTRACTS = ("mc-contract-0.1", "mc-contract-0.2", None)
 
 SEXES = ("男", "女")
 EXAM_KINDS = ("检验", "影像", "功能", "内镜", "造影", "穿刺", "培养", "病理", "取材", "其他")
@@ -35,6 +38,13 @@ def is_core(e):
 
 def _day(x, los):
     return isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= los
+
+
+_HM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+def _hm_ok(s):
+    return s is None or (isinstance(s, str) and bool(_HM_RE.match(s)))
 
 
 def validate_patient(p):
@@ -66,32 +76,58 @@ def validate_journey(j):
             errs.append(code)
         ids.add(i)
 
+    ev_day_by_id = {}
     for e in j.get("exams", []):
         fresh(e.get("id"), "exam_id")
         if not (_day(e.get("order_day"), los) and _day(e.get("result_day"), los) and e["order_day"] <= e["result_day"]):
             errs.append("exam_days")
+        if not (_hm_ok(e.get("order_hm")) and _hm_ok(e.get("result_hm"))):
+            errs.append("exam_hm")
+        elif e.get("order_hm") and e.get("result_hm") and e["order_day"] == e["result_day"] and e["order_hm"] > e["result_hm"]:
+            errs.append("exam_hm_order")
         if e.get("kind") not in EXAM_KINDS:
             errs.append("exam_kind")
+        if e.get("id") and _day(e.get("result_day"), los):
+            ev_day_by_id[e["id"]] = (e["result_day"], e.get("result_hm") or "00:00")
     for m in j.get("meds", []):
         fresh(m.get("id"), "med_id")
         if not (_day(m.get("start_day"), los) and _day(m.get("stop_day"), los) and m["start_day"] <= m["stop_day"]):
             errs.append("med_days")
+        if not (_hm_ok(m.get("start_hm")) and _hm_ok(m.get("stop_hm"))):
+            errs.append("med_hm")
+        elif m.get("start_hm") and m.get("stop_hm") and m["start_day"] == m["stop_day"] and m["start_hm"] > m["stop_hm"]:
+            errs.append("med_hm_order")
     surg = 0
     for a in j.get("procedures", []):
         fresh(a.get("id"), "proc_id")
         if not (_day(a.get("decide_day"), los) and _day(a.get("do_day"), los) and a["decide_day"] <= a["do_day"]):
             errs.append("proc_days")
+        if not (_hm_ok(a.get("decide_hm")) and _hm_ok(a.get("do_hm"))):
+            errs.append("proc_hm")
         if a.get("kind") not in PROC_KINDS:
             errs.append("proc_kind")
         surg += a.get("kind") == "手术"
+        if a.get("id") and _day(a.get("do_day"), los):
+            ev_day_by_id[a["id"]] = (a["do_day"], a.get("do_hm") or "00:00")
     if bool(surg) != bool(j.get("surgical")):
         errs.append("surgical_flag")
     if surg > 1:
         errs.append("surgery_count")
+    require_ev = j.get("contract") not in LEGACY_CONTRACTS
     last = {}
-    for d in sorted(j.get("dx_events", []), key=lambda x: x.get("day", -1)):
+    for d in sorted(j.get("dx_events", []), key=lambda x: (x.get("day", -1), x.get("hm") or "00:00")):
         if not _day(d.get("day"), los) or d.get("state") not in DX_STATES:
             errs.append("dx_event")
+        if not _hm_ok(d.get("hm")):
+            errs.append("dx_hm")
+        if d.get("day", 0) >= 1 and d.get("state") in ("确诊", "排除") and (require_ev or "evidence_ids" in d):
+            eids = d.get("evidence_ids") or []
+            if "evidence_ids" not in d or not eids:
+                errs.append("dx_missing_evidence")
+            else:
+                dts = (d.get("day"), d.get("hm") or "23:59")
+                if any((eid not in ev_day_by_id) or (ev_day_by_id[eid] > dts) for eid in eids):
+                    errs.append("dx_future_evidence")
         last[d.get("name")] = d.get("state")
     days = [d.get("day") for d in j.get("daily", [])]
     if days != list(range(los + 1)):

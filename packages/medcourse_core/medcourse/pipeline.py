@@ -33,7 +33,7 @@ from .safe import SafeError, guarded, log
 
 MAX_SECTION_TRIES = 3
 MAX_DOC_REWRITES = 2
-VERSION = "s1-pipeline-0.3.4"  # 0.34：临床防穿帮微封口（非手术切口/未分娩产褥/器官映像与部位补全/Z51跨科肿瘤过滤/儿童与新生儿约束）
+VERSION = "s1-pipeline-0.3.7"  # 0.37：闭合阳性检查能力白名单与“分别为”并列配对/歧义阻断
 PE_EXCERPT, SPEC_EXCERPT = 300, 60   # 0.1.11：出院记录"入院情况"的摘录 120 → 300 字（第十次合成病历 M6，阳性体征在 120 字以后）
 PE_REF = 400                         # 0.1.11：专科情况提示里给的体格检查全文上限
 _SENT_END = "。！？!?"
@@ -58,21 +58,22 @@ def hr_context(texts):
     return {"hr_pe": pe} if pe else {}
 
 
-def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=None, first_doc_out=None):
-    """写一篇。每节最多采 3 次，仍不过就取失败最少的那次，交给住院级闸门。"""
+def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=None, first_doc_out=None, hard_fails_out=None):
+    """写一篇。LLMWriter 每节最多采 4 次，安全修补后必须重跑 check_section；硬约束仍不通过则记入 hard_fails_out 升级重写或拒收。"""
     epistemic = not getattr(w, "ablate_epistemic", False)
     plans = compiler.compile_doc(j, spec, specs, stats, rng, ctx, epistemic=epistemic)
     texts, first_texts = {}, {}
+    hr_hm = next((s.get("time") for s in specs if s["role"] == "HR" and s.get("time")), "23:59")
     for pl in plans:
         if pl["mode"] == "program":
             continue
         if spec["role"] != "DS":
-            vday = 0 if pl.get("admission_only") else spec["day"]
-            vis = compiler.visible(j, vday)
-            # 0.1.12.1（老板 11-10 批准）：这一节里结果口吻的检查只能是截至当天已回报的（"入院情况"这类只写入院当时的节到第 0 天）
+            cutoff = (0, hr_hm) if pl.get("admission_only") else compiler.spec_ts(spec)
+            vis = compiler.visible(j, cutoff)
+            # 0.1.12.1 / 0.3.5：这一节里结果口吻的检查只能是截至统一 (day, hm) 截点已回报的
             pl["result_keys"] = gate.result_keys(vis["results"])
             if epistemic:
-                # 0.2.0（老板 11-11 批准）：当天仍处于"疑似"状态的诊断不许写成确诊或排除定论（只看截至当天可见状态，不看未来）
+                # 0.2.0 / 0.3.5：当天此刻仍处于"疑似"状态的诊断不许写成确诊或排除定论
                 pl["unsettled_dx"] = sorted(n for n, st in vis["dx"].items() if st == "疑似" and len(n) >= 2)
                 pl["settled_dx"] = sorted(
                     {n for n, st in vis["dx"].items() if st != "疑似" and len(n) >= 2}
@@ -124,30 +125,38 @@ def write_doc(j, spec, specs, stats, w, rng, tally, prev_note, round_=0, ctx=Non
             if not fails:
                 break
         pl.pop("retry_fails", None)
-        for code in best_f:
-            tally["sec_" + code] = tally.get("sec_" + code, 0) + 1
-        if "admission_leak" in best_f:
-            # 0.1.5："入院情况"三次都带住院后的事，剔掉带触发词的分句再交出（0.1.4 带着交出，W-8B 的 D_K4 6/20 都是这样来的）
-            best = gate.strip_admission_leak(best)
-            tally["sec_admission_leak_stripped"] = tally.get("sec_admission_leak_stripped", 0) + 1
-        fix_pool = gate.FIXABLE if splice else gate.PIPELINE_SAFE_FIX
-        fixable = [c for c in best_f if c in fix_pool]
-        if fixable:
-            # 0.1.8 / 0.30：TemplateWriter 对照保持 FIXABLE，LLMWriter 仅保留纯格式安全修补（truncated/repeat 等）
-            best = gate.repair_section(best, fixable, pl)
-            for code in fixable:
-                tally[f"sec_{code}_repaired"] = tally.get(f"sec_{code}_repaired", 0) + 1
-        if not best_f:
+        if best_f:
+            if "admission_leak" in best_f:
+                best = gate.strip_admission_leak(best)
+                tally["sec_admission_leak_stripped"] = tally.get("sec_admission_leak_stripped", 0) + 1
+            fix_pool = gate.FIXABLE if splice else gate.PIPELINE_SAFE_FIX
+            fixable = [c for c in best_f if c in fix_pool]
+            if fixable:
+                best = gate.repair_section(best, fixable, pl)
+            if len(gate._clean(best)) < 2:
+                post_f = ["empty_after_repair"]
+            else:
+                post_f = gate.check_section(pl, best)
+            post_set = set(post_f)
+            for code in dict.fromkeys(best_f):
+                if code not in post_set:
+                    tally[f"sec_{code}_repaired"] = tally.get(f"sec_{code}_repaired", 0) + 1
+            for code in post_f:
+                tally["sec_" + code] = tally.get("sec_" + code, 0) + 1
+                if hard_fails_out is not None and code in gate.HARD_SECTION_FAILS:
+                    hard_fails_out.append((pl["section"], code))
+        else:
             tally["sections_first_try"] = tally.get("sections_first_try", 0) + (attempt == 0)
         if splice and "copy" in pl and prev_note:
             gap_day = prev_note["day"]
             budget = compiler.copy_budget(stats, spec, gap_day, prev_role=prev_note.get("role"))
             pl["copy"]["budget"] = round(budget, 4)
             banned = compiler.copy_banned(j, spec["day"]) + list(prev_note.get("overused") or ())
+            spec_ts = compiler.spec_ts(spec)
             best, added = compiler.apply_copy(
                 best, prev_note["text"], budget, rng, banned, diag=tally,
-                banned_meds=compiler.inactive_meds(j, spec["day"]),
-                allowed_nums=compiler.active_med_nums(j, spec["day"]),
+                banned_meds=compiler.inactive_meds(j, spec_ts),
+                allowed_nums=compiler.active_med_nums(j, spec_ts),
                 safe_fn=lambda s, _p=pl: gate.copy_safe(_p, s),
                 max_sents=compiler.copy_max_sents(spec, prev_note.get("role")),
             )
@@ -202,6 +211,28 @@ def _prev_ctx(k, specs, note_bodies):
     return base
 
 
+def expand_rewrite_deps(ks, specs):
+    """0.3.5：上游 HR 或可作后续拷贝/去重来源的文书重写后，级联作废并纳入下游依赖文书。"""
+    out = set(ks)
+    hr_k = next((s["k"] for s in specs if s["role"] == "HR"), None)
+    changed = True
+    while changed:
+        changed = False
+        if hr_k is not None and hr_k in out:
+            for s in specs:
+                if s["role"] == "DS" and s["k"] not in out:
+                    out.add(s["k"])
+                    changed = True
+        for u in list(out):
+            if 0 <= u < len(specs) and specs[u]["role"] in ("FP", "SUP", "PRE", "POST", "DAILY"):
+                for s in specs:
+                    v = s["k"]
+                    if v > u and s["role"] in ("SUP", "PRE", "POST", "DAILY") and v not in out:
+                        out.add(v)
+                        changed = True
+    return out
+
+
 def generate_one(jid, stats, w, seed, slot, tally, first_docs_out=None):
     """返回 (journey, docs, 失败码列表)。docs 为 None 表示丢弃。"""
     rng = random.Random(planner.seed_of(seed, jid))
@@ -215,8 +246,17 @@ def generate_one(jid, stats, w, seed, slot, tally, first_docs_out=None):
     docs, note_bodies, ctx = [], {}, {}
     for spec in specs:
         fbox = [] if first_docs_out is not None else None
-        text, texts = write_doc(j, spec, specs, stats, w, rng, tally, _prev_ctx(spec["k"], specs, note_bodies), ctx=ctx, first_doc_out=fbox)
-        docs.append({"doc_type": spec["doc_type"], "day_offset": spec["day"], "text": text, "doc_type_cn": spec["doc_type_cn"], "k": spec["k"], "role": spec["role"]})
+        hf = []
+        text, texts = write_doc(
+            j, spec, specs, stats, w, rng, tally,
+            _prev_ctx(spec["k"], specs, note_bodies), ctx=ctx,
+            first_doc_out=fbox, hard_fails_out=hf,
+        )
+        docs.append({
+            "doc_type": spec["doc_type"], "day_offset": spec["day"], "text": text,
+            "doc_type_cn": spec["doc_type_cn"], "k": spec["k"], "role": spec["role"],
+            "_hard_sec_fails": sorted({c for _, c in hf}),
+        })
         if first_docs_out is not None:
             first_docs_out.append({"doc_type": spec["doc_type"], "day_offset": spec["day"], "text": fbox[0], "doc_type_cn": spec["doc_type_cn"], "k": spec["k"], "role": spec["role"]})
         if spec["role"] == "HR":
@@ -234,21 +274,25 @@ def generate_one(jid, stats, w, seed, slot, tally, first_docs_out=None):
             break
         tally["adm_rewrites"] = tally.get("adm_rewrites", 0) + 1
         ks = {k for k, _ in fails if k is not None} or {d["k"] for d in docs}
-        hr_k = next(s["k"] for s in specs if s["role"] == "HR")
-        if hr_k in ks:
-            # 0.1.9：入院记录重写了，出院记录"入院情况"跟着重写，两边的查体对得上
-            ks |= {s["k"] for s in specs if s["role"] == "DS"}
+        ks = expand_rewrite_deps(ks, specs)
+        for x in ks:
+            note_bodies.pop(x, None)
         for k in sorted(ks):
             spec = specs[k]
-            # 重写病程也要按上一篇病程拷贝（0.1 这里传 None，重写后的病程丢了拷贝）
-            text, texts = write_doc(j, spec, specs, stats, w, rng, tally, _prev_ctx(k, specs, note_bodies), r, ctx=ctx)
-            docs[k] = dict(docs[k], text=text)
+            hf = []
+            text, texts = write_doc(
+                j, spec, specs, stats, w, rng, tally,
+                _prev_ctx(k, specs, note_bodies), r, ctx=ctx, hard_fails_out=hf,
+            )
+            docs[k] = dict(docs[k], text=text, _hard_sec_fails=sorted({c for _, c in hf}))
             if spec["role"] == "HR":
                 ctx = hr_context(texts)
             src = _note_copy_source(spec["role"], texts)
             if src:
                 note_bodies[k] = src
         fails = gate.check_admission(j, docs)
+    for d in docs:
+        d.pop("_hard_sec_fails", None)
     if fails:
         return j, None, sorted({c for _, c in fails})
     return j, docs, []

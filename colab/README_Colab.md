@@ -6,7 +6,7 @@
 
 1. **允许在 Colab 上运行的任务**：
    - **路线 B 扩展与复现**（`route_b.build_kb_agentic`）：输入仅含 `public_data/route_b_sources/` 中的公开卫健委临床路径及《抗菌药物临床应用指导原则》文本；
-   - **全套代码单测与框架联调**：`scripts/run_all_tests.py` 与 `fixtures_mc.stats()` 虚构夹具合成演示。
+   - **全套代码单测与框架联调**：`scripts/run_all_tests.py`（含 `medcourse_core v0.3.7` `230` 项单测与 `s5_kit` `18` 项归因/审计/基准单测）及 `fixtures_mc.stats()` 虚构夹具与 `--kb-only` 合成演示。
 2. **禁止上传或接入 Colab 的数据**：
    - 任何去标识或原始病历语料（如 `deid_run9*`）、`S2` 真实抽取事件（`events*.jsonl`）、医院派生统计表（`stats_v*.json`）及受控折数据（`fold 8 / fold 9`）。`colab_bootstrap.py` 内置路径命名拦截保护。
 

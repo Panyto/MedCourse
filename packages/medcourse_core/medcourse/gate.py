@@ -35,7 +35,14 @@ nonsurg_postop：非手术住院写了"术后恢复""手术顺利"这类话。�
 import datetime as dt
 import re
 
-from .compiler import _INC_SKIP_SECTIONS, _has_delivery_event, no_incision
+from .compiler import (
+    BP_PAIR_RE,
+    _INC_SKIP_SECTIONS,
+    _has_delivery_event,
+    exam_ts,
+    no_incision,
+    norm_unit,
+)
 from .rules import setup
 from .stats import PAST_TERMS, past_matches
 
@@ -106,9 +113,13 @@ _PANEL_NORM_PAT = {
     "粪常规": r"粪常规|大便常规|便常规",
     "肝功能": r"肝功能|转氨酶|胆红素|白蛋白",
     "肾功能": r"肾功能|肌酐|尿素氮",
-    "凝血": r"凝血(?:功能|四项|象)?|D-?二聚体",
+    "凝血": r"凝血(?:功能|四项|象)?",
+    "D二聚体": r"D[-—]?二聚体",
     "电解质": r"电解质|血钾|血钠|血氯|血钙",
     "心肌酶": r"心肌酶|肌钙蛋白|肌酸激酶",
+    "利钠肽": r"利钠肽|BNP|NT-?proBNP",
+    "血糖": r"血糖",
+    "淀粉酶": r"淀粉酶",
     "血脂": r"血脂|胆固醇|甘油三酯",
     "C反应蛋白": r"C反应蛋白|CRP",
     "降钙素原": r"降钙素原|PCT",
@@ -147,11 +158,22 @@ _META_TEXT = re.compile(r"(?:记录|病程)(?:完整|真实)|无遗漏|内容真
 _INCISION_WORDS = ("切口", "刀口", "引流")
 _POSTPARTUM_WORDS = ("恶露", "乳汁", "哺乳", "产后恢复", "产褥")
 _ADULT_CHRON_WORDS = ("高血压", "糖尿病", "冠心病", "冠状动脉粥样硬化", "脑梗死", "脑卒中", "慢阻肺", "慢性阻塞性肺", "房颤", "心房颤动")
-_GENERIC_PAST_DENY_WORDS = ("否认高血压", "既往无特殊", "既往体健", "无高血压")
+_GENERIC_PAST_DENY_WORDS = ("既往无特殊", "既往体健")
 FIXABLE = ("truncated", "repeat", "nonsurg_postop", "pe_history", "hint_leak", "pe_result", "result_unsourced", "dx_settled_early",
            "pe_untested", "pe_dup_vitals", "senior_in_daily", "before_op_done", "no_incision_leak", "undelivered_postpartum", "early_preg_fetal",
            "english_prose", "meta_text", "past_contradict", "future_date")
 PIPELINE_SAFE_FIX = ("truncated", "repeat", "english_prose", "meta_text", "hint_leak")
+SOFT_SECTION_FAILS = frozenset({"too_short", "repeat"})
+HARD_SECTION_FAILS = frozenset({
+    "number_unsourced", "item_number_mismatch", "item_stale_value", "item_parallel_ambiguous",
+    "fact_missing", "result_tone_missing", "dx_polarity_missing",
+    "admission_leak", "prompt_leak", "nonsurg_postop", "pe_history", "pe_result",
+    "pe_untested", "pe_dup_vitals", "senior_in_daily", "before_op_done",
+    "no_incision_leak", "undelivered_postpartum", "early_preg_fetal",
+    "result_unsourced", "dx_settled_early", "past_contradict", "future_date",
+    "postop_day_mismatch", "lab_abn_called_normal", "english_prose", "meta_text",
+    "hint_leak", "empty_after_repair",
+})
 
 # 0.2.0（M1 严格档 B 2/1023，老板 11-11 批准）：诊断定论提前（dx_settled_early）。词表自己写，不 import 评测台的 oracle2（闸门和记分牌分家）。
 # 当天规划里还是"疑似"的诊断（unsettled_dx，流程按截至当天的可见状态给），写手写成确诊或排除定论、且没有考虑/待/需等缓冲词时命中。
@@ -303,7 +325,89 @@ def repeated_clauses(text):
 
 
 def _clean(s):
-    return re.sub(r"[\s，,。；;：:、！？!?]", "", s or "")
+    return re.sub(r"[\s，,。；;：:、！？!?\-—–（）()]", "", s or "")
+
+
+_FACT_KEY_ALIASES = {
+    "D二聚体": ("D二聚体", "D-二聚体"),
+    "利钠肽": ("利钠肽", "脑钠肽", "BNP", "NT-proBNP"),
+    "心肌肌钙蛋白": ("心肌肌钙蛋白", "肌钙蛋白", "cTnI"),
+    "肌钙蛋白": ("肌钙蛋白", "心肌肌钙蛋白", "cTnI"),
+}
+_RESULT_NUM_AFTER = re.compile(
+    r"^[^，,。；;\n]{0,18}?\d+(?:\.\d+)?\s*(?:mmol/L|μmol/L|umol/L|g/L|×10\^?9/L|10\^?9/L|mmHg|℃|次/分|U/L|mg/L|ng/mL|pg/mL|%|cm|mm|mg|g|ml|mL)",
+    re.I,
+)
+_RESULT_QUAL_AFTER = re.compile(
+    r"^[^，,。；;\n]{0,14}?(?:偏高|偏低|升高|降低|升高明显|阳性|阴性|正常|异常|未见异常|未见明显异常|未培养出|培养出|可见|符合|提示)"
+)
+_DOC_HM_RE = re.compile(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\s+(\d{2}:\d{2})\b")
+
+
+def _key_variants(key):
+    base = [key] if key else []
+    for k2 in _FACT_KEY_ALIASES.get(key or "", ()):
+        if k2 not in base:
+            base.append(k2)
+    return base
+
+
+def _has_result_evidence(text, key):
+    t = text or ""
+    pats = []
+    for v in _key_variants(key):
+        sub = v[:4] if len(v) >= 4 else v
+        if sub == "D-二聚":
+            pats.append(r"D-?二聚体?")
+        else:
+            pats.append(re.escape(sub))
+    rx = re.compile("|".join(dict.fromkeys(pats)))
+    for m in rx.finditer(t):
+        if tone_of(t, m.start(), m.end())[0] == "R":
+            return True
+        a, b = clause_span(t, m.start(), m.end())
+        pre, post = t[a:m.start()], t[m.end():b]
+        if _PEND_POST.search(post):
+            continue
+        trigs = list(_PEND_PRE.finditer(pre))
+        pending_pre = bool(trigs and not _has_any(pre[trigs[-1].end():], _PEND_RESULT_WORDS))
+        if not pending_pre and (_RESULT_NUM_AFTER.search(post) or _RESULT_QUAL_AFTER.search(post)):
+            return True
+    return False
+
+
+def _has_dx_firm_polarity(text, name, req_pol):
+    t = text or ""
+    cands = [name]
+    stripped = re.sub(r"[（(][^）)]*[）)]", "", name or "").strip()
+    if stripped and len(stripped) >= 2 and stripped not in cands:
+        cands.append(stripped)
+    for cand in cands:
+        for m in re.finditer(re.escape(cand), t):
+            s, e = m.start(), m.end()
+            a, b = clause_span(t, s, e)
+            pre, post = t[max(a, s - 16):s], t[e:min(b, e + 12)]
+            if _DX_TENT_POST.search(post) or _DX_TENT_PRE.search(pre):
+                continue
+            if req_pol == "确诊":
+                if (_DX_FIRM_CONF_PRE.search(pre) or _DX_FIRM_CONF_POST.search(post)
+                        or (_DX_DIAG_BEFORE.search(pre) and _DX_MINGQUE_AFTER.search(post))
+                        or re.search(r"明确(?:诊断)?(?:存在)?$", pre)
+                        or re.search(r"^[：:]?\s*(?:诊断)?(?:成立|明确)", post)):
+                    return True
+            else:
+                if ((_DX_FIRM_EXCL_PRE.search(pre) or _DX_FIRM_EXCL_POST.search(post)
+                     or re.search(r"基本除外|可除外", pre) or re.search(r"^[，,\s]*(?:可能性极?低|可予?排除)", post))
+                        and not _DX_PLAN_SENT_PRE.search(t[a:s])):
+                    return True
+    return False
+
+
+def _doc_hm(d):
+    if d.get("time"):
+        return d["time"]
+    m = _DOC_HM_RE.search((d.get("text") or "")[:220])
+    return m.group(1) if m else "23:59"
 
 
 _PANEL_KEY_TOKEN = re.compile(
@@ -354,6 +458,274 @@ def future_dates(text, doc_date_str, is_pre_op=False):
     return out
 
 
+_LAB_ALIAS_PAIRS = (
+    ("糖化血红蛋白", "HBA1C"), ("HbA1c", "HBA1C"), ("HBA1C", "HBA1C"),
+    ("活化部分凝血活酶时间", "APTT"), ("APTT", "APTT"),
+    ("凝血酶原时间", "PT"), ("PT", "PT"),
+    ("国际标准化比值", "INR"), ("INR", "INR"),
+    ("纤维蛋白原", "FIB"), ("FIB", "FIB"),
+    ("D-二聚体", "DD"), ("D—二聚体", "DD"), ("D－二聚体", "DD"), ("D二聚体", "DD"),
+    ("C-反应蛋白", "CRP"), ("C—反应蛋白", "CRP"), ("C反应蛋白", "CRP"), ("CRP", "CRP"),
+    ("降钙素原", "PCT"), ("PCT", "PCT"),
+    ("心肌肌钙蛋白I", "TNI"), ("肌钙蛋白I", "TNI"), ("心肌肌钙蛋白", "TNI"), ("cTnI", "TNI"), ("TnI", "TNI"), ("TNI", "TNI"),
+    ("肌酸激酶同工酶", "CKMB"), ("CK-MB", "CKMB"), ("CKMB", "CKMB"),
+    ("肌酸激酶", "CK"), ("CK", "CK"),
+    ("乳酸脱氢酶", "LDH"), ("LDH", "LDH"),
+    ("中性粒细胞比例", "NEUT"), ("中性粒细胞百分比", "NEUT"), ("中性粒细胞", "NEUT"), ("NEUT%", "NEUT"), ("NEUT", "NEUT"),
+    ("白细胞计数", "WBC"), ("白细胞", "WBC"), ("WBC", "WBC"),
+    ("血红蛋白", "HGB"), ("HGB", "HGB"),
+    ("血小板计数", "PLT"), ("血小板", "PLT"), ("PLT", "PLT"),
+    ("谷丙转氨酶", "ALT"), ("丙氨酸氨基转移酶", "ALT"), ("ALT", "ALT"),
+    ("谷草转氨酶", "AST"), ("天门冬氨酸氨基转移酶", "AST"), ("AST", "AST"),
+    ("总胆红素", "TBIL"), ("TBIL", "TBIL"),
+    ("白蛋白", "ALB"), ("ALB", "ALB"),
+    ("血肌酐", "CREA"), ("肌酐", "CREA"), ("CREA", "CREA"),
+    ("尿素氮", "BUN"), ("BUN", "BUN"),
+    ("血尿酸", "UA"), ("尿酸", "UA"), ("UA", "UA"),
+    ("血清钾", "K"), ("血钾", "K"),
+    ("血清钠", "NA"), ("血钠", "NA"),
+    ("血清氯", "CL"), ("血氯", "CL"),
+    ("血清钙", "CA"), ("血钙", "CA"),
+    ("空腹血糖", "GLU"), ("血糖", "GLU"), ("GLU", "GLU"),
+    ("血淀粉酶", "AMY"), ("淀粉酶", "AMY"), ("AMY", "AMY"),
+    ("总胆固醇", "TC"), ("TC", "TC"),
+    ("甘油三酯", "TG"), ("TG", "TG"),
+    ("低密度脂蛋白胆固醇", "LDL"), ("低密度脂蛋白", "LDL"), ("LDL-C", "LDL"), ("LDL", "LDL"),
+    ("BNP", "BNP"), ("利钠肽", "BNP"),
+)
+_LAB_ALIAS_MAP = {k.lower(): v for k, v in _LAB_ALIAS_PAIRS}
+
+
+def _compile_lab_item_re():
+    parts = []
+    for k, _ in sorted(_LAB_ALIAS_PAIRS, key=lambda kv: (-len(kv[0]), kv[0])):
+        p = re.escape(k)
+        if k == "血红蛋白":
+            p = r"(?<!糖化)(?<!红细胞)" + p
+        elif k == "白蛋白":
+            p = r"(?<!前)" + p
+        elif k in ("C-反应蛋白", "C—反应蛋白", "C反应蛋白"):
+            p = r"(?<!超敏)" + p
+        if k[0].isascii() and k[0].isalpha():
+            p = r"(?<![A-Za-z-])" + p
+        if k[-1].isascii() and k[-1].isalpha():
+            p = p + r"(?![A-Za-z-])"
+        parts.append(p)
+    return re.compile("|".join(parts), re.I)
+
+
+_LAB_ITEM_RE = _compile_lab_item_re()
+_LAB_VAL_TOK_RE = re.compile(
+    r"(?<![\d.\^])(\d+(?:\.\d+)?)(?![\d.])\s*"
+    r"((?:[×x*]\s*)?10\^?\d+/(?:[A-Za-z]+|升)|毫摩尔/升|微摩尔/升|纳克/毫升|皮克/毫升|毫克/升|克/升|单位/升|mmol/L|μmol/L|umol/L|ng/mL|pg/mL|mg/dL|mg/L|g/L|U/L|IU/L|次/分|mmHg|℃|%|秒|s|mg|g|ml|mL)?",
+    re.I,
+)
+_SPAN_STOPS = ("参考", "正常范围", "正常值", "体温", "脉搏", "心率", "呼吸", "血压", "血氧", "瞳孔", "予", "给予", "口服", "静滴")
+_DATE_OR_TIME_CH = ("年", "月", "日", "号", "天", "周", "时", "分", "例", "次", "片", "粒", "支", "袋", "期", "型", "级")
+_NON_LAB_UNITS = ("℃", "mmhg", "次/分", "cm", "mm")
+_CUR_CUES = ("目前", "现", "今日", "今查", "本次", "最新", "出院前", "末次", "仍为", "仍在", "仍", "降至", "升至", "回落", "恢复至")
+_HIST_CUES = ("入院", "前次", "初次", "原为", "原", "曾", "既往", "由", "从", "较前", "较入院")
+_QUAL_START = ("偏高", "偏低", "升高", "降低", "正常", "未见", "阴性", "阳性", "较前", "恢复", "均", "等", "、", "和", "与", "及", "。")
+
+
+def _clause_prefix(text, pos, sent_start):
+    i = pos - 1
+    while i >= sent_start:
+        if text[i] in "。！？!?\n；;，,":
+            return text[i + 1:pos]
+        i -= 1
+    return text[sent_start:pos]
+
+
+def _is_date_or_time_tok(seg, nm, raw_u):
+    if raw_u:
+        return False
+    s, e, tok = nm.start(), nm.end(), nm.group(1)
+    prv = seg[s - 1:s] if s > 0 else ""
+    nxt = seg[e:e + 1]
+    if nxt in _DATE_OR_TIME_CH:
+        return True
+    if nxt == "个" and seg[e + 1:e + 2] in ("月", "周", "天", "年"):
+        return True
+    if prv == ":" or nxt == ":":
+        return True
+    if tok.isdigit() and ((prv in "-/" and (len(tok) == 2 or nxt in "-/")) or (nxt in "-/" and len(tok) == 4)):
+        return True
+    return False
+
+
+def _extract_val_matches(seg, accept_roles):
+    out = []
+    for nm in _LAB_VAL_TOK_RE.finditer(seg):
+        head = seg[:nm.start()].rstrip()
+        if head.endswith(("^", "×10", "*10", "x10")):
+            continue
+        raw_u = nm.group(2) or ""
+        if _is_date_or_time_tok(seg, nm, raw_u):
+            continue
+        u_norm = norm_unit(raw_u) if raw_u else ""
+        if u_norm in _NON_LAB_UNITS:
+            continue
+        if u_norm in ("mg", "g", "ml") and not any(r and r.get("unit") == u_norm for r in accept_roles):
+            continue
+        out.append((nm, nm.group(1), u_norm))
+    return out
+
+
+def audit_item_numbers(plan, text):
+    """0.3.7：逐项配对核对 (实体, 数值, 单位) 与复查新旧值角色；“分别为”可一对一配对时按序核对，无法配对则计入未解析并阻断。"""
+    roles = plan.get("lab_item_roles") or {}
+    t = text or ""
+    if not roles or not t:
+        return {"fails": [], "parsed": 0, "unparsed": 0, "qualitative_only": 0, "hits": [], "unparsed_details": []}
+    ms = list(_LAB_ITEM_RE.finditer(t))
+    parsed = unparsed = qualitative_only = 0
+    fails, hits, unparsed_details = [], [], []
+    occ_by_ik = {}
+    idx = 0
+    while idx < len(ms):
+        m = ms[idx]
+        ik = _LAB_ALIAS_MAP.get(m.group(0).lower())
+        role = roles.get(ik)
+        sent_start = max((t.rfind(ch, 0, m.start()) for ch in "。！？!?\n；;"), default=-1) + 1
+        sent_end = len(t)
+        for ch in "。！？!?\n；;":
+            pos = t.find(ch, m.end(), sent_end)
+            if pos != -1:
+                sent_end = pos
+
+        chain = [m]
+        chain_end = idx
+        while chain_end + 1 < len(ms) and ms[chain_end + 1].end() <= sent_end:
+            gap = t[ms[chain_end].end():ms[chain_end + 1].start()]
+            if gap.strip(" 、,，/及和与同\t"):
+                break
+            chain_end += 1
+            chain.append(ms[chain_end])
+
+        last_m = chain[-1]
+        span_end = sent_end
+        if chain_end + 1 < len(ms) and ms[chain_end + 1].start() < span_end:
+            span_end = ms[chain_end + 1].start()
+        for kw in _SPAN_STOPS:
+            pos = t.find(kw, last_m.end(), span_end)
+            if pos != -1:
+                span_end = pos
+        tail_seg = t[last_m.end():span_end]
+        chain_iks = [_LAB_ALIAS_MAP.get(mj.group(0).lower()) for mj in chain]
+        chain_roles = [roles.get(k) for k in chain_iks]
+        tail_vals = _extract_val_matches(tail_seg, chain_roles) if tail_seg.strip() else []
+        has_fenbie = ("分别" in tail_seg[:tail_vals[0][0].start()]) if tail_vals else (len(chain) >= 2 and "分别" in tail_seg)
+
+        if has_fenbie:
+            fb_pos = tail_seg.index("分别")
+            pre_fb = tail_seg[:fb_pos].strip(" 均各值结果水平指标检查提示示为是系在：:\t")
+            clean_parallel = (
+                len(chain) >= 2
+                and len(tail_vals) == len(chain)
+                and pre_fb == ""
+                and all(k in roles for k in chain_iks)
+            )
+            if clean_parallel:
+                pre_item = _clause_prefix(t, chain[0].start(), sent_start)
+                between_head = tail_seg[:tail_vals[0][0].start()]
+                prev_end = 0
+                for j_idx, (k_j, role_j, (nm_j, val_s_j, u_norm_j)) in enumerate(zip(chain_iks, chain_roles, tail_vals)):
+                    parsed += 1
+                    between_prev = (between_head if j_idx == 0 else "") + tail_seg[prev_end:nm_j.start()]
+                    prev_end = nm_j.end()
+                    allowed_all_j = {role_j["latest"]} | set(role_j.get("priors") or ())
+                    unit_bad = (u_norm_j in ("mg", "g", "ml") and (not role_j.get("unit") or u_norm_j != role_j["unit"])) or (
+                        u_norm_j and role_j.get("unit") and u_norm_j != role_j["unit"]
+                    )
+                    if val_s_j not in allowed_all_j or unit_bad:
+                        if "item_number_mismatch" not in fails:
+                            fails.append("item_number_mismatch")
+                        hits.append(("item_number_mismatch", k_j, val_s_j, u_norm_j, role_j["latest"]))
+                        continue
+                    has_cur = _has_any(between_prev, _CUR_CUES) or (
+                        _has_any(pre_item, _CUR_CUES) and not _has_any(between_prev, _HIST_CUES)
+                    )
+                    has_hist = _has_any(between_prev, _HIST_CUES) or (
+                        not has_cur and _has_any(pre_item, _HIST_CUES)
+                    )
+                    occ_by_ik.setdefault(k_j, []).append((val_s_j, u_norm_j, has_cur, has_hist))
+            else:
+                tracked = [(mj, k_j) for mj, k_j in zip(chain, chain_iks) if k_j in roles]
+                for mj, k_j in tracked:
+                    unparsed += 1
+                    unparsed_details.append({"ik": k_j, "item": mj.group(0), "seg": tail_seg[:80], "reason": "parallel_ambiguous"})
+                if tracked:
+                    if "item_parallel_ambiguous" not in fails:
+                        fails.append("item_parallel_ambiguous")
+                    hits.append(("item_parallel_ambiguous", ",".join(k_j for _, k_j in tracked), str(len(tail_vals)), "", str(len(chain))))
+            idx = chain_end + 1
+            continue
+
+        idx += 1
+        if not role:
+            continue
+        span_end = sent_end
+        if idx < len(ms) and ms[idx].start() < span_end:
+            span_end = ms[idx].start()
+        for kw in _SPAN_STOPS:
+            pos = t.find(kw, m.end(), span_end)
+            if pos != -1:
+                span_end = pos
+        seg = t[m.end():span_end]
+        if not seg.strip():
+            qualitative_only += 1
+            continue
+        pre_item = _clause_prefix(t, m.start(), sent_start)
+        val_matches = _extract_val_matches(seg, (role,))
+        if not val_matches:
+            s_strip = seg.lstrip("：:约为示在仍 \t")
+            if not s_strip or any(s_strip.startswith(q) for q in _QUAL_START):
+                qualitative_only += 1
+            else:
+                unparsed += 1
+                unparsed_details.append({"ik": ik, "item": m.group(0), "seg": seg[:80], "reason": "no_numeric_token_in_span"})
+            continue
+        allowed_all = {role["latest"]} | set(role.get("priors") or ())
+        prev_end = 0
+        for num_idx, (nm, val_s, u_norm) in enumerate(val_matches):
+            parsed += 1
+            between_prev = seg[prev_end:nm.start()]
+            prev_end = nm.end()
+            if val_s not in allowed_all or (u_norm and role.get("unit") and u_norm != role["unit"]):
+                if "item_number_mismatch" not in fails:
+                    fails.append("item_number_mismatch")
+                hits.append(("item_number_mismatch", ik, val_s, u_norm, role["latest"]))
+                continue
+            has_cur = _has_any(between_prev, _CUR_CUES) or (
+                num_idx == 0 and _has_any(pre_item, _CUR_CUES) and not _has_any(between_prev, _HIST_CUES)
+            )
+            has_hist = _has_any(between_prev, _HIST_CUES) or (
+                num_idx == 0 and not has_cur and _has_any(pre_item, _HIST_CUES)
+            )
+            occ_by_ik.setdefault(ik, []).append((val_s, u_norm, has_cur, has_hist))
+    for ik, occ in occ_by_ik.items():
+        role = roles[ik]
+        if not role.get("priors"):
+            continue
+        last_latest_idx = max((i for i, o in enumerate(occ) if o[0] == role["latest"]), default=-1)
+        for i, (val_s, u_norm, has_cur, has_hist) in enumerate(occ):
+            if val_s == role["latest"]:
+                continue
+            if has_cur or (not role.get("is_ds_course") and not has_hist and i > last_latest_idx):
+                if "item_stale_value" not in fails:
+                    fails.append("item_stale_value")
+                hits.append(("item_stale_value", ik, val_s, u_norm, role["latest"]))
+    return {
+        "fails": fails,
+        "parsed": parsed,
+        "unparsed": unparsed,
+        "qualitative_only": qualitative_only,
+        "hits": hits,
+        "unparsed_details": unparsed_details,
+    }
+
+
 def check_section(plan, text):
     """节级。返回失败代码列表。"""
     fails = []
@@ -362,19 +734,37 @@ def check_section(plan, text):
     if any(w in (text or "") for w in LEAK):
         fails.append("prompt_leak")
     allowed = set(plan.get("allowed") or ())
+    ap_raw = plan.get("allowed_pairs")
+    allowed_pairs = {(str(v), u) for v, u in ap_raw} if ap_raw is not None else None
     for m in _NUM.finditer(text or ""):
-        if m.group(1) not in allowed and not routine_number(text, m):
+        if routine_number(text, m):
+            continue
+        val_s, u_norm = m.group(1), norm_unit(m.group(2))
+        if (val_s not in allowed) or (allowed_pairs is not None and (val_s, u_norm) not in allowed_pairs):
             fails.append("number_unsourced")
             break
+    if "number_unsourced" not in fails and allowed_pairs is not None:
+        for m in BP_PAIR_RE.finditer(text or ""):
+            if (m.group(1) not in allowed or m.group(2) not in allowed
+                    or (m.group(1), "mmhg") not in allowed_pairs or (m.group(2), "mmhg") not in allowed_pairs):
+                fails.append("number_unsourced")
+                break
+    if plan.get("lab_item_roles"):
+        fails.extend(audit_item_numbers(plan, text)["fails"])
     t = _clean(text)
     for f in plan["facts"]:
         if not (f["must"] and f.get("key")):
             continue
-        key = _clean(f["key"])[:4]
-        if key not in t:
+        if not any(_clean(v)[:4] in t for v in _key_variants(f["key"])):
             fails.append("fact_missing")
-        elif f.get("kind") == "result" and not any(tone_of(text, m.start(), m.end())[0] == "R" for m in re.finditer(re.escape(f["key"][:4]), text or "")):
+            continue
+        if f.get("kind") == "result" and not _has_result_evidence(text, f["key"]):
             fails.append("result_tone_missing")
+        req_pol = f.get("req_dx_polarity")
+        if req_pol is None and f.get("kind") == "dx" and plan.get("role") in ("SUP", "DAILY") and ("诊断明确" in f.get("text", "") or "排除" in f.get("text", "")):
+            req_pol = "确诊" if "诊断明确" in f.get("text", "") else "排除"
+        if req_pol in ("确诊", "排除") and not _has_dx_firm_polarity(text, f["key"], req_pol):
+            fails.append("dx_polarity_missing")
     if plan.get("admission_only") and admission_leaks(text):
         fails.append("admission_leak")
     if text and truncated(text):
@@ -615,21 +1005,22 @@ _DONE_V_WORDS = ("已行", "已于", "已经", "已完成", "已实施", "已做
 
 
 def future_leak(j, docs):
-    """结果提前：还没回报的化验数值或尚未回报的任意检查结果写进了前面的文书。返回文书序号。出院记录不查。"""
+    """结果提前：按统一 (day, hm) 截点检查还没回报的化验数值或尚未回报的检查结果是否提前写进前面的文书。出院记录不查。"""
     out = set()
     post_k = next((x["k"] for x in docs if x.get("role") == "POST"), None)
     for d in docs:
         if d["role"] == "DS":
             continue
-        known = {(x["item"], x["value"]) for e in j["exams"] if e["result_day"] <= d["day_offset"] for x in e["items"]}
+        c_ts = (d["day_offset"], _doc_hm(d))
+        known = {(x["item"], x["value"]) for e in j["exams"] if exam_ts(e) <= c_ts for x in e["items"]}
         for e in j["exams"]:
-            if e["result_day"] <= d["day_offset"]:
+            if exam_ts(e) <= c_ts:
                 continue
             for x in e["items"]:
                 if (x["item"], x["value"]) not in known and re.search(re.escape(x["item"]) + r"[^，,。；;\n]{0,5}?" + re.escape(x["value"]) + r"(?!\d)", d["text"]):
                     out.add(d["k"])
-        allowed_keys = set(result_keys([e for e in j["exams"] if e["result_day"] <= d["day_offset"]]))
-        future_keys = set(result_keys([e for e in j["exams"] if e["result_day"] > d["day_offset"]])) - allowed_keys
+        allowed_keys = set(result_keys([e for e in j["exams"] if exam_ts(e) <= c_ts]))
+        future_keys = set(result_keys([e for e in j["exams"] if exam_ts(e) > c_ts])) - allowed_keys
         if future_keys:
             is_hr = (d.get("doc_type") == "hospital_record") or (d.get("role") == "HR")
             segs = [s.text for s in split_sections(d["text"]) if not (is_hr and s.name in PRE_ADMISSION_SECTIONS)]
@@ -732,4 +1123,7 @@ def check_admission(j, docs):
             for d in docs:
                 if "胎动" in d["text"]:
                     fails.append((d["k"], "early_preg_fetal"))
+    for d in docs:
+        for hc in d.get("_hard_sec_fails") or ():
+            fails.append((d["k"], "hard_sec_" + hc))
     return fails

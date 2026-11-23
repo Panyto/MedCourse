@@ -64,7 +64,50 @@ _COPY_CLIN_CONFLICT_WORDS = ("未见明显异常", "未见异常", "结果正常
 GENERAL_MENTAL = {"better": ("精神、睡眠较前好转，饮食可", "精神可，饮食、睡眠可", "精神好，食欲改善，睡眠可"),
                   "same": ("精神、饮食、睡眠可", "精神尚可，饮食、睡眠一般", "精神可，纳眠可")}
 GENERAL_BOWEL = ("大小便正常", "二便如常", "二便正常")
-_NO_INCISION_WORDS = ("经尿道", "输尿管镜", "输尿管软镜", "膀胱镜", "宫腔镜", "胃镜", "肠镜", "支气管镜", "喉镜", "内镜逆行", "ERCP")
+_NO_INCISION_WORDS = ("经尿道", "输尿管镜", "输尿管软镜", "膀胱镜", "宫腔镜", "胃镜", "肠镜", "支气管镜", "喉镜", "内镜逆行", "ERCP", "经自然腔道")
+_OPEN_OR_PORT_INCISION_WORDS = (
+    "切开", "切除", "剔除", "摘除", "剥除", "剥脱", "根治", "清创", "缝合", "修补", "成形", "重建",
+    "松解", "吻合", "造口", "置换", "内固定", "切开复位", "截肢", "截指", "截趾", "剖宫产", "剖腹",
+    "开颅", "开胸", "外剥内扎", "环切", "挂线", "搭桥", "移植", "腹腔镜", "胸腔镜", "关节镜", "后腹腔镜",
+)
+_PUNCTURE_INTERVENTION_WORDS = ("造影", "支架", "介入", "消融", "起搏器", "球囊", "PCI", "经桡动脉", "内瘘", "穿刺", "经皮")
+_DRAIN_TUBE_WORDS = ("经皮肾镜", "造瘘", "置管引流", "穿刺引流", "脓肿引流")
+_NONINVASIVE_PROC_WORDS = ("康复治疗", "气压治疗", "物理治疗", "高压氧", "光疗", "雾化治疗")
+
+UNIT_NUM_RE = re.compile(
+    r"(?<![\d.])(\d+(?:\.\d+)?)\s*(mmol/L|μmol/L|umol/L|g/L|×10\^?9/L|10\^?9/L|mmHg|℃|次/分|U/L|mg/L|ng/mL|pg/mL|%|cm|mm|mg|g|ml|mL)",
+    re.I,
+)
+BP_PAIR_RE = re.compile(r"(\d{2,3})\s*/\s*(\d{2,3})\s*mmHg", re.I)
+
+
+def norm_unit(unit):
+    u = re.sub(r"\s+", "", unit or "").lower()
+    if u in ("×10^9/l", "×109/l", "10^9/l", "109/l", "×10^9/升", "×109/升", "10^9/升", "109/升"):
+        return "10^9/l"
+    if u in ("μmol/l", "umol/l", "微摩尔/升"):
+        return "umol/l"
+    if u in ("秒", "sec"):
+        return "s"
+    return {
+        "克/升": "g/l",
+        "毫克/升": "mg/l",
+        "纳克/毫升": "ng/ml",
+        "皮克/毫升": "pg/ml",
+        "毫摩尔/升": "mmol/l",
+        "单位/升": "u/l",
+    }.get(u, u)
+
+
+def extract_num_unit_pairs(text):
+    pairs = set()
+    t = text or ""
+    for m in UNIT_NUM_RE.finditer(t):
+        pairs.add((m.group(1), norm_unit(m.group(2))))
+    for m in BP_PAIR_RE.finditer(t):
+        pairs.add((m.group(1), "mmhg"))
+        pairs.add((m.group(2), "mmhg"))
+    return pairs
 
 
 def _has_any(text, words):
@@ -72,9 +115,28 @@ def _has_any(text, words):
     return any(w in t for w in words)
 
 
+def proc_profile(a):
+    """0.3.5：按术式属性而非麻醉方式判断切口、自然腔道、穿刺通道与引流管属性；未知操作保持 has_incision=None。"""
+    nm = (a or {}).get("name") or ""
+    may_drain = _has_any(nm, _DRAIN_TUBE_WORDS)
+    nat_orifice = _has_any(nm, _NO_INCISION_WORDS) and not _has_any(nm, ("腹腔镜", "胸腔镜", "关节镜", "后腹腔镜", "剖腹", "开胸", "经皮"))
+    if nat_orifice:
+        return {"has_incision": False, "natural_orifice": True, "puncture_only": False, "may_have_drain": may_drain}
+    if _has_any(nm, _OPEN_OR_PORT_INCISION_WORDS):
+        return {"has_incision": True, "natural_orifice": False, "puncture_only": False, "may_have_drain": True}
+    if may_drain:
+        return {"has_incision": False, "natural_orifice": False, "puncture_only": True, "may_have_drain": True}
+    if _has_any(nm, _PUNCTURE_INTERVENTION_WORDS):
+        return {"has_incision": False, "natural_orifice": False, "puncture_only": True, "may_have_drain": False}
+    if _has_any(nm, _NONINVASIVE_PROC_WORDS):
+        return {"has_incision": False, "natural_orifice": False, "puncture_only": False, "may_have_drain": False}
+    return {"has_incision": None, "natural_orifice": False, "puncture_only": False, "may_have_drain": True}
+
+
 def no_incision(a):
-    """局部麻醉、静脉麻醉、未配麻醉的操作或自然腔道内镜术式（经尿道输尿管软镜、消化内镜、宫腔镜……）没有切口和引流。"""
-    return not a.get("anesthesia") or a.get("anesthesia") in ("局部麻醉", "静脉麻醉") or _has_any(a.get("name"), _NO_INCISION_WORDS)
+    """0.3.5：仅对确认无开放/腔镜切口且无外置引流管的术式（自然腔道内镜、经血管介入、无创操作）返回 True；不再把局麻或缺失麻醉等同为无切口。"""
+    prof = proc_profile(a)
+    return prof["has_incision"] is False and not prof["may_have_drain"]
 
 
 def _proc_done_phrase(a, prefix=""):
@@ -82,7 +144,10 @@ def _proc_done_phrase(a, prefix=""):
 
 
 def postop_watch(a, n, kb_facts=None):
-    """术后第 n 天要观察的。开放、腔镜手术优先融合路线 B 专科观察要点；无切口微创只写术区和穿刺点。"""
+    """术后第 n 天要观察的。区分开放/腔镜切口、经皮穿刺造瘘引流（如PCNL）与无切口腔内/介入操作。"""
+    prof = proc_profile(a)
+    if prof["puncture_only"] and prof["may_have_drain"]:
+        return "观察穿刺通道敷料及造瘘引流管通畅情况" + ("，指导饮食和活动" if n >= 3 else "")
     if no_incision(a):
         return "观察术区及穿刺点情况，有无出血等并发症" + ("，指导饮食和活动" if n >= 3 else "")
     if kb_facts and kb_facts.get("postop_watch") and n >= 1:
@@ -92,15 +157,39 @@ def postop_watch(a, n, kb_facts=None):
     return "观察切口愈合及饮食、活动恢复情况" if n >= 3 else "观察切口及引流情况，指导早期活动"
 
 
+def exam_ts(e):
+    return (e["result_day"], e.get("result_hm") or "00:00")
+
+
+def order_ts(e):
+    return (e["order_day"], e.get("order_hm") or "00:00")
+
+
+def med_start_ts(m):
+    return (m["start_day"], m.get("start_hm") or "00:00")
+
+
+def med_stop_ts(m):
+    return (m["stop_day"], m.get("stop_hm") or "23:59")
+
+
+def dx_ts(d):
+    return (d["day"], d.get("hm") or "00:00")
+
+
+def spec_ts(spec):
+    return (spec["day"], spec.get("time") or "23:59")
+
+
 def op_state(j, spec, specs):
-    """0.1.9 / 0.21.2：这一篇写的时候手术做没做（严格按当前之前是否已出现同日 POST，保持前缀可观测性）。
-    返回 (已做的, 已决定还没做的)。"""
-    post_done = any(s["role"] == "POST" and s["day"] == spec["day"] and s["k"] < spec["k"] for s in specs)
+    """0.3.5：POST 本身即为已完手术状态（修复 POST 误判未手术导致无切口误报）；手术决定按 (day, hm) 可见。"""
+    post_done = (spec.get("role") == "POST") or any(s["role"] == "POST" and s["day"] == spec["day"] and s["k"] < spec["k"] for s in specs)
+    c_ts = spec_ts(spec)
     done, pending = [], []
     for a in j["procedures"]:
         if a["do_day"] < spec["day"] or (a["do_day"] == spec["day"] and post_done):
             done.append(a)
-        elif a["decide_day"] <= spec["day"]:
+        elif (a["decide_day"], a.get("decide_hm") or "00:00") <= c_ts:
             pending.append(a)
     return done, pending
 ROUND = {"主任医师查房记录": "主任医师", "主治医师查房记录": "主治医师", "上级医师查房记录": "上级医师"}
@@ -194,13 +283,49 @@ def _vital_values(v):
     return [v["T"], v["P"], v["R"], v["SBP"], v["DBP"]]
 
 
-def visible(j, day):
-    """截至 day 的可见事实。"""
-    return {"results": [e for e in j["exams"] if e["result_day"] <= day], "today": [e for e in j["exams"] if e["result_day"] == day],
-            "pending": [e for e in j["exams"] if e["order_day"] <= day < e["result_day"]], "new_order": [e for e in j["exams"] if e["order_day"] == day < e["result_day"]],
-            "meds": [m for m in j["meds"] if m["start_day"] <= day <= m["stop_day"]], "meds_new": [m for m in j["meds"] if m["start_day"] == day],
-            "done": [a for a in j["procedures"] if a["do_day"] <= day], "planned": [a for a in j["procedures"] if a["decide_day"] <= day < a["do_day"]],
-            "dx": {d["name"]: d["state"] for d in sorted(j["dx_events"], key=lambda x: x["day"]) if d["day"] <= day}}
+def visible(j, cutoff):
+    """截至 cutoff（整数 day 或 (day, hm)）的统一可见事实。"""
+    has_hm_cutoff = isinstance(cutoff, tuple)
+    if has_hm_cutoff:
+        c_day, c_hm = int(cutoff[0]), cutoff[1]
+        c_ts = (c_day, c_hm)
+    else:
+        c_day = int(cutoff)
+        c_ts = (c_day, "23:59")
+    los = j.get("los", c_day)
+
+    def _med_active(m):
+        if med_start_ts(m) > c_ts:
+            return False
+        if not has_hm_cutoff or m["stop_day"] >= los or m.get("stop_hm") is None:
+            return c_day <= m["stop_day"]
+        return c_ts < med_stop_ts(m)
+
+    return {
+        "results": [e for e in j["exams"] if exam_ts(e) <= c_ts],
+        "today": [e for e in j["exams"] if e["result_day"] == c_day and exam_ts(e) <= c_ts],
+        "pending": [e for e in j["exams"] if order_ts(e) <= c_ts < exam_ts(e)],
+        "new_order": [e for e in j["exams"] if e["order_day"] == c_day and order_ts(e) <= c_ts < exam_ts(e)],
+        "meds": [m for m in j["meds"] if _med_active(m)],
+        "meds_new": [m for m in j["meds"] if m["start_day"] == c_day and med_start_ts(m) <= c_ts],
+        "done": [a for a in j["procedures"] if (a["do_day"], a.get("do_hm") or "00:00") <= c_ts],
+        "planned": [a for a in j["procedures"] if (a["decide_day"], a.get("decide_hm") or "00:00") <= c_ts < (a["do_day"], a.get("do_hm") or "23:59")],
+        "dx": {d["name"]: d["state"] for d in sorted(j["dx_events"], key=lambda x: (dx_ts(x), x.get("id") or "")) if dx_ts(d) <= c_ts},
+    }
+
+
+def _meds_stopped_between(j, prev_ts, cutoff):
+    los = j.get("los", cutoff[0])
+    out = []
+    for m in j.get("meds") or ():
+        if m["stop_day"] >= los:
+            continue
+        if m.get("stop_hm") is not None:
+            if prev_ts < med_stop_ts(m) <= cutoff:
+                out.append(m)
+        elif prev_ts[0] <= m["stop_day"] < cutoff[0]:
+            out.append(m)
+    return out
 
 
 def _dx_fact(name, state, must=False, basis=None):
@@ -286,21 +411,41 @@ def prev_course_day(spec, specs):
     return max(days) if days else 0
 
 
+def prev_course_cutoff(spec, specs):
+    """这篇之前最近一篇病程的 (day, hm) 截点；之前无病程则取第0天先前文书最新时点（前缀可观测）。"""
+    prev_specs = [s for s in specs if s["k"] < spec["k"] and s["role"] in COURSE]
+    if prev_specs:
+        last = max(prev_specs, key=lambda s: s["k"])
+        return spec_ts(last)
+    d0_hms = [s.get("time") or "23:59" for s in specs if s["day"] == 0 and s["k"] < spec["k"]]
+    return (0, max(d0_hms) if d0_hms else "23:59")
+
+
+def last_course_cutoff(specs):
+    """DS 诊疗经过用：截至最后一篇 COURSE 文书的 (day, hm) 截点。"""
+    cs = [s for s in specs if s["role"] in COURSE]
+    if cs:
+        last = max(cs, key=lambda s: s["k"])
+        return spec_ts(last)
+    return (0, "23:59")
+
+
 SUP_FOLLOWUP_THEMES = ("评估近期治疗反应及症状转归", "复核近期指标变化及用药反应", "评估当前恢复进展及后续诊疗安排")
 
 
 def course_focus(j, spec, specs, rng, epistemic=True):
-    """这一篇病程的"今日重点"：按上一篇病程以来发生的事，取优先级最高的两条；什么都没发生就轮换一个观察点。
-    返回 [(类别, 句子)]，句子是病程里能直接写的话，不带数值。"""
+    """这一篇病程的"今日重点"：按上一篇病程截点 (day, hm) 以来发生的事，取优先级最高的两条。"""
     p, day = j["patient"], spec["day"]
-    prev = prev_course_day(spec, specs)
-    v = visible(j, day)
+    prev_ts = prev_course_cutoff(spec, specs)
+    prev = prev_ts[0]
+    cutoff = spec_ts(spec)
+    v = visible(j, cutoff)
     d = j["daily"][day]
     out = []
     if spec["role"] == "SUP":
         dx = p["primary_dx"]["name"]
-        # 0.1.9：今天才加的药不写"继续"；0.2.1.1：在用药按文书序号轮换，后续 SUP 查房轮换疗效与恢复主题、不再重复首日鉴别
-        meds_pool = [m for m in v["meds"] if not prev < m["start_day"] <= day]
+        # 0.1.9 / 0.3.5：今天或当前时窗内刚加的药不写"继续"
+        meds_pool = [m for m in v["meds"] if not (prev_ts < med_start_ts(m) <= cutoff)]
         med = meds_pool[spec["k"] % len(meds_pool)] if meds_pool else None
         med_tail = f"，治疗上继续{med['name']}" if med else "，暂不调整治疗"
         if epistemic:
@@ -323,14 +468,18 @@ def course_focus(j, spec, specs, rng, epistemic=True):
             out.append(("postop", f"术后第{n}天，" + postop_watch(a, n, j.get("kb_facts"))))
     for a in pending:
         out.append(("preop", ("今日" if a["do_day"] == day else "") + f"拟行{a['name']}，完善术前准备，向患者及家属交代手术风险"))
-    back = [e for e in j["exams"] if prev < e["result_day"] <= day]
+    back = [e for e in j["exams"] if prev_ts < exam_ts(e) <= cutoff]
     if back:
         out.append(("result", f"结合{'、'.join(e['name'] for e in back[:3])}结果分析病情"))
-    dx_evs = [x for x in j["dx_events"] if prev < x["day"] <= day and x["state"] in ("确诊", "排除") and x["day"] > 0]
+    dx_evs = [x for x in j["dx_events"] if prev_ts < dx_ts(x) <= cutoff and x["state"] in ("确诊", "排除") and x["day"] > 0]
     if epistemic:
         for x in dx_evs:
-            out.append(("dx", f"结合检查结果，{x['name']}诊断明确" if x["state"] == "确诊" else f"结合检查结果，排除{x['name']}"))
-    stopped = [m for m in j["meds"] if prev <= m["stop_day"] < day]
+            basis = x.get("basis_text") or "结合检查结果"
+            if x["state"] == "确诊":
+                out.append(("dx", f"{basis}，{x['name']}诊断明确"))
+            else:
+                out.append(("dx", f"{basis}，已排除{x['name']}"))
+    stopped = _meds_stopped_between(j, prev_ts, cutoff)
     if stopped:
         # 0.1.9：停药理由按大类写（0.1.8 一律"疗程已足"，波立维、美托洛尔也这样写）
         by = {}
@@ -395,10 +544,10 @@ def copy_max_sents(spec, prev_role=None):
 
 
 def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
-    """返回这篇文书的节列表：[{section, mode, title, facts, target_chars, program_text?, copy?}]。title 为空表示不写小标题。
-    ctx（0.1.9，流程传）：{"hr_pe": 入院记录实际写出的体格检查摘录}，出院记录"入院情况"拿它当事实；不传时照 0.1.8。"""
+    """返回这篇文书的节列表：[{section, mode, title, facts, target_chars, program_text?, copy?}]。"""
     p, day, role = j["patient"], spec["day"], spec["role"]
-    v = visible(j, day)
+    cutoff = spec_ts(spec)
+    v = visible(j, cutoff)
     d = j["daily"][day]
     plans = []
 
@@ -500,8 +649,9 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
     elif role in COURSE:
         # 0.1.4 按上一篇病程之后的变化写。0.1.3 每篇都列在用药、天天重复待回报的检查，相邻两篇太像；
         # 检查只给当天回报的，病程又不是天天写，中间回报的检查一直进不了病程
-        prev = prev_course_day(spec, specs)
-        # 0.1.6：重点放最前面；症状有消失的写消失，没变化的写程度；查体只在异常、术后或一半的日子给
+        prev_ts = prev_course_cutoff(spec, specs)
+        prev = prev_ts[0]
+        # 0.1.6 / 0.3.5：重点放最前面；所有跨篇筛选统一按 (day, hm) 截点 (prev_ts, cutoff] 执行
         facts = []
         if role == "SUP":
             facts.append(_fact("round", f"今日{ROUND[spec['doc_type_cn']]}查房", True, ROUND[spec["doc_type_cn"]]))
@@ -526,26 +676,27 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
         ng = stats.get("note_general") or {}
         if rng.random() < (ng.get("精神睡眠饮食") or 0):
             facts.append(_fact("general", rng.choice(GENERAL_MENTAL["better" if d["trend"] in ("好转", "减轻") else "same"])))
-        # 0.1.11：二便不再给。写手自己就写二便（第十次 A256 0.15），程序再按真实比例加一份，合起来 0.32，超过真实 0.18；
-        # 精神睡眠饮食写手写得少，照给。留一次抽签，后面的规划不跟着变
+        # 0.1.11：二便不再给，留一次抽签，后面的规划不跟着变
         rng.random()
         abnormal = d["T"] >= 37.3 or d["SBP"] >= 160 or d["SBP"] < 90
         if d["symptoms"] and (abnormal or any(k == "postop" for k, _ in focus) or rng.random() < 0.5):
-            # 0.1.9：写"阳性体征较前好转"，不写"咳嗽相关体征"（0.1.8 被原样写出 35 处）；不按症状另配部位表
             facts.append(_fact("exam", f"查体：阳性体征{TREND_TEXT.get(d['trend'], '')}"))
-        facts += [_result_fact(e, True) for e in j["exams"] if prev < e["result_day"] <= day]
+        facts += [_result_fact(e, True) for e in j["exams"] if prev_ts < exam_ts(e) <= cutoff]
         if epistemic:
-            focus_texts = {t for _, t in focus}
             for x in j["dx_events"]:
-                if prev < x["day"] <= day and x["state"] in ("确诊", "排除") and x["day"] > 0:
-                    c_txt, e_txt = f"结合检查结果，{x['name']}诊断明确", f"结合检查结果，排除{x['name']}"
-                    if c_txt in focus_texts or e_txt in focus_texts:
-                        for ff in facts:
-                            if ff["kind"] == "focus" and x["name"] in ff["text"]:
-                                ff["must"], ff["key"] = True, x["name"]
+                if prev_ts < dx_ts(x) <= cutoff and x["state"] in ("确诊", "排除") and x["day"] > 0:
+                    basis = x.get("basis_text") or "结合检查结果"
+                    req_pol = "确诊" if x["state"] == "确诊" else "排除"
+                    dx_txt = f"{basis}，{x['name']}诊断明确" if req_pol == "确诊" else f"{basis}，已排除{x['name']}"
+                    matched_focus = next((ff for ff in facts if ff["kind"] == "focus" and ff["text"] == dx_txt), None)
+                    if matched_focus is not None:
+                        matched_focus["must"] = True
+                        matched_focus["key"] = x["name"]
+                        matched_focus["req_dx_polarity"] = req_pol
                     else:
-                        dx_txt = c_txt if x["state"] == "确诊" else f"结合检查结果，已排除{x['name']}"
-                        facts.append(_fact("dx", dx_txt, True, x["name"]))
+                        f_dx = _fact("dx", dx_txt, True, x["name"])
+                        f_dx["req_dx_polarity"] = req_pol
+                        facts.append(f_dx)
         # 0.1.9 / 0.30：手术当天术后首程之前的病程算还没做；术后病程显式传入精确“术后第K天”必写事实与硬校验天数
         done, pending = op_state(j, spec, specs)
         facts += [_fact("procedure", _proc_done_phrase(a, "今日"), True, a["name"]) for a in done if a["do_day"] == day]
@@ -555,10 +706,10 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
                 op_dt = doc_date(j, a["do_day"])
                 facts.append(_fact("procedure", f"今日为术后第{pday}天（患者已于{op_dt}{_proc_done_phrase(a, '')}）", False, None, [pday] + re.findall(r"\d+", op_dt)))
         facts += [_fact("plan", f"今日拟行{a['name']}，尚未实施" if a["do_day"] == day else f"已决定第{a['do_day']}天行{a['name']}，尚未实施") for a in pending]
-        ordered = [e for e in j["exams"] if prev < e["order_day"] <= day < e["result_day"] and (done or e.get("name") != "术后病理")]
+        ordered = [e for e in j["exams"] if prev_ts < order_ts(e) <= cutoff < exam_ts(e) and (done or e.get("name") != "术后病理")]
         facts += [_fact("pending", "已开具" + "、".join(e["name"] for e in ordered) + "，待回报")] if ordered else []
-        started = [m for m in j["meds"] if prev < m["start_day"] <= day]
-        stopped = [m for m in j["meds"] if prev <= m["stop_day"] < day]
+        started = [m for m in j["meds"] if prev_ts < med_start_ts(m) <= cutoff]
+        stopped = _meds_stopped_between(j, prev_ts, cutoff)
         facts += [_fact("med", "加用" + _med_text(m, True), True, m["name"], _med_values(m)) for m in started]
         facts += [_fact("med", "停用" + "、".join(m["name"] for m in stopped))] if stopped else []
         # 0.1.5 / 0.21.3：SUP 已在查房焦点带药，仅首次未加药 SUP 再轮换提 1 种；首篇 DAILY 维持 1-2 种，后续 DAILY 半数轮换提 1 种
@@ -644,18 +795,19 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
         # 0.1.9：拿入院记录实际写出的体格检查当事实（0.1.8 只给"专科查体与主要症状相符"，写手另编了一套，和入院记录矛盾）
         adm.append(_fact("exam", "入院时体格检查：" + pe, False, None, _FLOAT_RE.findall(pe)) if pe
                    else _fact("exam", kb.organ_pe_facts(j, d0)[1]))
-        llm("入院情况", adm + [_result_fact(e, False) for e in visible(j, 0)["results"]])
+        hr_hm = next((s.get("time") for s in specs if s["role"] == "HR" and s.get("time")), "23:59")
+        llm("入院情况", adm + [_result_fact(e, False) for e in visible(j, (0, hr_hm))["results"]])
         plans[-1]["admission_only"] = True
         prog("入院诊断", "\n" + _dx_line(_admission_dx(j, epistemic)))
         # 最后一篇病程之后才回报的检查只有出院记录能写，必写；0.21.2 用日历日期并把手术/异常重点/用药置前
-        last = max([s["day"] for s in specs if s["role"] in COURSE], default=0)
+        last_cut = last_course_cutoff(specs)
         procs_f = [_fact("procedure", _proc_done_phrase(a, doc_date(j, a["do_day"])), True, a["name"]) for a in j["procedures"]]
-        sorted_ex = sorted(j["exams"], key=lambda x: x["result_day"])
+        sorted_ex = sorted(j["exams"], key=lambda x: exam_ts(x))
         key_ex, norm_ex = [], []
         for e in sorted_ex:
-            is_abn = bool(e.get("diagnostic") or e.get("abnormal") or any(x["flag"] != "正常" for x in e["items"]))
+            is_abn = bool(e.get("diagnostic") or e.get("abnormal") or e.get("incidental_findings") or any(x["flag"] != "正常" for x in e["items"]))
             txt, evs = _narrative_exam_text(j, e, "诊疗经过")
-            f_ex = _fact("result", f"{doc_date(j, e['result_day'])}查{e['name']}：{txt}", e["result_day"] > last, e["name"], evs)
+            f_ex = _fact("result", f"{doc_date(j, e['result_day'])}查{e['name']}：{txt}", exam_ts(e) > last_cut, e["name"], evs)
             (key_ex if is_abn else norm_ex).append(f_ex)
         meds_f = [_fact("med", "使用" + _med_text(m, rng.random() < (stats.get("p_dose_written") or 0.25)), False, m["name"], _med_values(m)) for m in j["meds"][:6]]
         changes = [x for x in j["dx_events"] if x["state"] != "疑似" and x["day"] > 0] if epistemic else []
@@ -670,21 +822,47 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
     done_ops, pending_ops = op_state(j, spec, specs)
     known_ops = done_ops + pending_ops
     all_no_incision = bool(known_ops and all(no_incision(a) for a in known_ops))
+    pcnl_drain_ops = bool(done_ops and all(proc_profile(a)["puncture_only"] and proc_profile(a)["may_have_drain"] for a in done_ops))
     name_has_inc = _has_any(p["primary_dx"]["name"] + "".join(a["name"] for a in known_ops), _INC_TOKENS)
     no_open_op_done = (not done_ops) or all(no_incision(a) for a in done_ops)
     undelivered_preg = bool(p.get("pregnant") and not _has_delivery_event(j, done_ops, include_all_comorb=(role == "DS")))
     early_preg = bool(p.get("pregnant") and (p.get("gest_weeks") or 38) < 18)
     cday_str = doc_date(j, day)
+    hr_hm_adm = next((s.get("time") for s in specs if s["role"] == "HR" and s.get("time")), "23:59")
     for pl in plans:
         pl["k"], pl["day"], pl["role"] = spec["k"], day, role
-        pl["allowed"] = sorted(_allowed(j, day, pl))
+        sec_cut = (0, hr_hm_adm) if pl.get("admission_only") else ((j["los"], "23:59") if pl["section"] == "诊疗经过" else cutoff)
+        pl["allowed"] = sorted(_allowed(j, sec_cut, pl))
+        pl["allowed_pairs"] = sorted([list(px) for px in _allowed_pairs(j, sec_cut, pl)])
+        if pl["mode"] == "llm" and pl["section"] != "出院医嘱":
+            ex_scope = visible(j, sec_cut)["results"]
+            lab_seq = {}
+            for e in sorted(ex_scope, key=lambda x: (exam_ts(x), x.get("id") or "")):
+                for it in e.get("items") or ():
+                    ik = it.get("key")
+                    if ik:
+                        lab_seq.setdefault(ik, []).append((str(it["value"]), norm_unit(it.get("unit") or ""), e["result_day"], it["item"]))
+            if lab_seq:
+                pl["lab_item_roles"] = {
+                    ik: {
+                        "item": vals[-1][3],
+                        "unit": vals[-1][1],
+                        "latest": vals[-1][0],
+                        "priors": sorted({v for v, _, _, _ in vals[:-1] if v != vals[-1][0]}),
+                        "latest_day": vals[-1][2],
+                        "is_ds_course": (pl["section"] == "诊疗经过"),
+                    }
+                    for ik, vals in lab_seq.items()
+                }
         if pl["mode"] == "llm" and pl["section"] != "出院医嘱":
             pl["doc_date"] = cday_str
         if pl["mode"] == "llm" and not known_ops and role in ("DS",) + COURSE:
             pl["nonsurgical"] = True
         if pl["mode"] == "llm" and not done_ops and (role in COURSE + ("PRE", "FP") or (role == "HR" and pl["section"] not in ("现病史", "既往史"))):
             pl["before_op"] = True
-        if pl["mode"] == "llm" and not name_has_inc and no_open_op_done:
+        if pl["mode"] == "llm" and pcnl_drain_ops and role in ("POST", "SUP", "DAILY", "DS"):
+            pl["hint"] = ((pl["hint"] + " ") if pl.get("hint") else "") + "本术式为经皮穿刺微创通道操作，可写穿刺通道敷料及造瘘引流管情况，不写开放大切口缝合或拆线。"
+        elif pl["mode"] == "llm" and not name_has_inc and no_open_op_done:
             if role in ("POST", "SUP", "DAILY", "DS") or (role == "HR" and pl["section"] in ("体格检查", "专科情况")):
                 pl["no_incision"] = True
             if all_no_incision and role in ("POST", "SUP", "DAILY", "DS"):
@@ -703,10 +881,16 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
             if role in ("SUP", "DAILY", "DS"):
                 pl["hint"] = ((pl["hint"] + " ") if pl.get("hint") else "") + "当前孕周不足18周，尚未出现胎动，不写胎动或规律宫缩。"
         if pl["mode"] == "llm" and any(f.get("kind") == "result" for f in pl.get("facts") or ()):
-            ex_scope = j["exams"] if pl["section"] == "诊疗经过" else (visible(j, 0 if pl.get("admission_only") else day)["results"])
+            ex_scope = visible(j, sec_cut)["results"]
+            norm_keys = {
+                e["key"] for e in ex_scope
+                if not e.get("diagnostic") and not e.get("abnormal") and not e.get("incidental_findings")
+                and all(x.get("flag") == "正常" for x in e.get("items") or ())
+            }
             abn_keys = sorted({
                 e["key"] for e in ex_scope
-                if any(x.get("flag") != "正常" for x in e.get("items") or ()) or e.get("abnormal")
+                if (any(x.get("flag") != "正常" for x in e.get("items") or ()) or e.get("abnormal"))
+                and e["key"] not in norm_keys
             })
             if abn_keys:
                 pl["has_abn_labs"] = True
@@ -714,10 +898,12 @@ def compile_doc(j, spec, specs, stats, rng, ctx=None, epistemic=True):
     return plans
 
 
-def _allowed(j, day, plan):
-    """这一节正文里允许出现的带单位数值：本节事实 + 当天可见的全部结果和体征。只写入院当时的节只到第 0 天。"""
-    vday = 0 if plan.get("admission_only") else (day if plan["section"] not in ("诊疗经过",) else j["los"])
-    v = visible(j, vday)
+def _allowed(j, cutoff, plan):
+    """这一节正文里允许出现的带单位数值：本节事实 + 截至截点可见的全部结果、在用药与体征。"""
+    vday = (0 if plan.get("admission_only") else (int(cutoff[0]) if isinstance(cutoff, tuple) else int(cutoff)))
+    if not isinstance(cutoff, tuple):
+        cutoff = (0 if plan.get("admission_only") else (cutoff if plan["section"] not in ("诊疗经过",) else j["los"]), "23:59")
+    v = visible(j, cutoff)
     out = set()
     for f in plan["facts"]:
         out.update(f["values"])
@@ -726,9 +912,32 @@ def _allowed(j, day, plan):
         out.update(x["value"] for x in e["items"])
     for m in v["meds"]:
         out.update(_med_values(m))
-    for dd in j["daily"][:vday + 1]:
+    v_end_day = int(cutoff[0])
+    for dd in j["daily"][:v_end_day + 1]:
         out.update(str(x) for x in _vital_values(dd))
     return out
+
+
+def _allowed_pairs(j, cutoff, plan):
+    """0.3.6：允许的 (数值, 归一单位) 元组集合，校验数值与单位搭配一致性（跨项目实体归属与新旧值由 lab_item_roles 独立核对）。"""
+    if not isinstance(cutoff, tuple):
+        cutoff = (0 if plan.get("admission_only") else (cutoff if plan["section"] not in ("诊疗经过",) else j["los"]), "23:59")
+    v = visible(j, cutoff)
+    pairs = set()
+    for f in plan["facts"]:
+        pairs.update(extract_num_unit_pairs(f.get("text") or ""))
+    for e in v["results"]:
+        for x in e["items"]:
+            pairs.add((str(x["value"]), norm_unit(x.get("unit"))))
+    for m in v["meds"]:
+        pairs.update(extract_num_unit_pairs(f"{m.get('dose', '')} {m.get('freq', '')}"))
+    v_end_day = int(cutoff[0])
+    for dd in j["daily"][:v_end_day + 1]:
+        pairs.update((
+            (str(dd["T"]), "℃"), (str(dd["P"]), "次/分"), (str(dd["R"]), "次/分"),
+            (str(dd["SBP"]), "mmhg"), (str(dd["DBP"]), "mmhg"),
+        ))
+    return pairs
 
 
 def assemble(j, spec, specs, plans, texts):
@@ -745,8 +954,8 @@ def assemble(j, spec, specs, plans, texts):
 
 
 def active_med_nums(j, day):
-    """当天仍在使用的药名和对应剂量/频次数字集合，供 stable_sentences/apply_copy 放行在用药物剂量句。"""
-    active = [m for m in j.get("meds") or () if m["start_day"] <= day <= m["stop_day"]]
+    """当天或截点 (day, hm) 仍在使用的药名和对应剂量/频次数字集合，供 stable_sentences/apply_copy 放行在用药物剂量句。"""
+    active = visible(j, day)["meds"] if isinstance(day, tuple) else [m for m in j.get("meds") or () if m["start_day"] <= day <= m["stop_day"]]
     names = [m["name"] for m in active if m.get("name")]
     nums = {x for m in active for x in _FLOAT_RE.findall(f"{m.get('dose', '')} {m.get('freq', '')}")}
     return names, nums
@@ -789,8 +998,8 @@ def trend_clash(sentence, text):
 
 
 def inactive_meds(j, day):
-    """这一天已经停了或还没开始的药名。0.1.6 会把上一篇的"继续某药治疗"拷进写着"停用某药"的这一篇。"""
-    active = {m["name"] for m in j["meds"] if m["start_day"] <= day <= m["stop_day"]}
+    """这一天或截点 (day, hm) 已经停了或还没开始的药名。0.1.6 会把上一篇的"继续某药治疗"拷进写着"停用某药"的这一篇。"""
+    active = {m["name"] for m in visible(j, day)["meds"]} if isinstance(day, tuple) else {m["name"] for m in j["meds"] if m["start_day"] <= day <= m["stop_day"]}
     return sorted({m["name"] for m in j["meds"]} - active)
 
 

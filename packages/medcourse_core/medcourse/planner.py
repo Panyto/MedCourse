@@ -58,7 +58,7 @@ from statistics import NormalDist
 
 from . import icd, kb
 from .contract import CONTRACT_VERSION, validate_docspecs, validate_journey
-from .drug_class import antitumor_ok, drug_class, indicated, is_chronic, oral_ok, subclass
+from .drug_class import NO_ORAL, antitumor_ok, drug_class, indicated, is_chronic, oral_ok, subclass
 from .rules import setup
 from .stats import (AGE_BANDS, LAB_NAME, LAB_UNIT, PAST_TERMS, PLAUSIBLE, PROC_FAMILY_NAME, REF, STATS_VERSION,
                     los_bucket, past_matches, proc_family, prog_day_bucket)
@@ -322,10 +322,9 @@ def strata_of(name, code):
     return [f"n:{name}"] + ([code] if len(code) == 3 else []) + ([blk] if blk else []) + ([code[:1]] if code else []) + ["*"]
 
 
-# 0.2.0（老板 11-11 批准，路线 B RB1 扩充）：强全麻词仍排最前（腹腔镜疝修补保持全麻，宫腔镜除外归静脉麻醉）；内瘘归局麻；
-# 部位词排到"切除、成形、摘除"这类泛动作词前面（血栓性外痔切除不再被"切除"带成全麻）；未命中不再默认全麻（返回 ""）
+# 0.2.0 / 0.3.5：强全麻词仍排最前（经皮肾镜归入全麻）；部位词排在泛动作词前面
 ANESTHESIA_RULES = (
-    (re.compile(r"(?<!宫)腔镜|开颅|开胸|剖腹|根治|置换|移植|搭桥"), "全身麻醉"),
+    (re.compile(r"(?<!宫)腔镜|经皮肾镜|开颅|开胸|剖腹|根治|置换|移植|搭桥"), "全身麻醉"),
     (re.compile(r"内瘘|造影|支架|介入|消融|穿刺|置管|活检|胃镜|肠镜|内镜|支气管镜|起搏器|球囊|射频|PCI|白内障|晶状体|人工晶体|清创|缝合|拔除|注射|引流"), "局部麻醉"),
     (re.compile(r"清宫|刮宫|人工流产|宫腔镜"), "静脉麻醉"),
     (re.compile(r"剖宫产|疝|下肢|大隐静脉|肛|痔|经尿道|膀胱|前列腺|髋|膝|股骨|胫|腓|踝|足|输尿管"), "腰硬联合麻醉"),
@@ -386,7 +385,12 @@ def finding_label(dx_name, code3):
     if base is None:
         return None
     cat = icd.category(code3) if code3 and len(code3) == 3 else None
-    if cat and len(cat) < len(base) and not _has_any(cat, _NOT_FINDING_WORDS):
+    bad_cat = bool(cat) and (
+        ("疾患" in cat and "疾患" not in base)
+        or ("胆囊" in cat and _has_any(base, ("胆总管", "肝总管", "肝内胆管", "胆管结石")))
+        or ("尿路病" in cat and "结石" in base)
+    )
+    if cat and not bad_cat and len(cat) < len(base) and not _has_any(cat, _NOT_FINDING_WORDS):
         base = cat
     return _QUAL_TAIL.sub("", base) or base
 
@@ -394,7 +398,7 @@ def finding_label(dx_name, code3):
 # 0.1.9：化疗、放疗、复查这类住院（主要诊断是一次治疗，不是一种病）。主诉不写症状，写"确诊××N月，为行第N次化疗"
 TREAT_DX = re.compile(r"化疗|化学治疗|放疗|放射治疗|靶向治疗|免疫治疗|生物治疗|内分泌治疗|复查|随访|内固定.{0,2}取出|取出内固定")
 TREAT_CODE3 = {"Z51", "Z08", "Z09", "Z47", "Z48"}
-_TREAT_TAIL = re.compile(r"(?:术后)?(?:的)?(?:维持性|辅助|新辅助|姑息性?)?(?:化学治疗|化疗|放射治疗|放疗|靶向治疗|免疫治疗|生物治疗|内分泌治疗|复查|随访|治疗)$")
+_TREAT_TAIL = re.compile(r"(?:术后)?(?:的)?(?:终末期)?(?:维持性|辅助|新辅助|姑息性?)?(?:化学治疗|化疗|放射治疗|放疗|靶向治疗|免疫治疗|生物治疗|内分泌治疗|介入治疗|支持治疗|维持治疗|姑息治疗|复查|随访|治疗)$")
 _CANCER_WORDS = ("癌", "恶性", "肉瘤", "淋巴瘤", "白血病", "骨髓瘤", "母细胞瘤")
 
 
@@ -419,6 +423,9 @@ _PRIOR_DX_TAIL = re.compile(r"(?:术后|治疗后|放化疗后|化疗后|放疗�
 
 def _clean_under(s):
     n = _TREAT_TAIL.sub("", (s or "").replace("？", "").replace("?", "")).strip("，,、 ")
+    for pfx in ("手术后", "术后"):
+        if n.startswith(pfx):
+            n = n[len(pfx):].strip("，,、 ")
     n = _PRIOR_DX_TAIL.sub("", n).strip("，,、 ")
     return n if len(n) >= 2 and not TREAT_DX.search(n) else None
 
@@ -459,9 +466,201 @@ def diag_eligible(key):
 FINDING_TEXT = {"影像": "符合{f}表现", "内镜": "符合{f}表现", "造影": "符合{f}表现", "功能": "可见异常改变", "穿刺": "符合{f}", "取材": "符合{f}"}
 
 
-def exam_lifts(stats, strata, organs=None):
-    """节层以内最细的非空层里，各检查的出现率是全局层的几倍。只看能算"诊断相关"的检查：不是常规化验和心电图，
-    检查的部位和诊断的器官对得上（organs，审查员第八轮补充；None 表示不查部位）。"""
+_NON_MORPH_DX_WORDS = (
+    "阿尔茨海默", "帕金森", "痴呆", "癫痫", "偏头痛", "脑疾患", "三叉神经痛", "周围神经痛", "枕神经痛", "肋间神经痛", "睡眠", "失眠",
+    "焦虑", "抑郁", "精神", "发育", "孤独症", "多动", "抽动", "遗尿",
+    "先兆早产", "先兆流产", "剖宫产史", "瘢痕子宫", "顺产", "活产", "产后", "产褥",
+    "哮喘", "上呼吸道感染", "急性咽炎", "急性扁桃体炎",
+    "心律失常", "房颤", "心房颤动", "早搏", "传导阻滞",
+    "高血压", "糖尿病", "高脂", "血脂", "痛风", "高尿酸",
+    "低钾", "高钾", "低钠", "高钠", "低钙", "电解质紊乱", "酸中毒", "碱中毒",
+    "贫血", "低蛋白", "营养不良", "骨髓抑制",
+    "肝功能不全", "肾功能不全", "肾衰竭", "尿毒症", "肾病综合征", "呼吸衰竭", "心力衰竭", "心功能不全",
+    "休克", "菌血症", "脓毒", "败血症", "阴道炎", "黄疸", "高胆红素", "偏瘫", "瘫痪",
+)
+_HISTO_NEOPLASM_WORDS = ("癌", "恶性", "肉瘤", "淋巴瘤", "白血病", "骨髓瘤", "母细胞瘤", "平滑肌瘤", "腺瘤", "畸胎瘤", "良性肿瘤")
+_EXPLICIT_STRUCTURAL_WORDS = (
+    "骨折", "脱位", "结石", "积水", "积液", "气胸", "穿孔", "肠梗阻", "阑尾炎", "胆囊炎",
+    "胰腺炎", "肺炎", "肺部感染", "支气管肺炎", "肺脓肿", "脑梗死", "脑出血", "蛛网膜下腔出血",
+    "血肿", "动脉瘤", "椎间盘", "椎管狭窄", "囊肿", "息肉", "肌瘤", "前列腺增生", "痔", "疝",
+    "溃疡", "胃炎", "食管炎", "结肠炎", "支气管扩张", "前置胎盘",
+)
+_PATHOLOGY_CAPABLE_WORDS = _HISTO_NEOPLASM_WORDS + ("炎", "溃疡", "息肉", "结节", "肿物", "肿块", "结核", "增生", "腺肌", "囊肿")
+_PATHOLOGY_BLOCKED_WORDS = ("骨折", "脱位", "结石", "脑梗死", "脑出血", "气胸", "心绞痛", "心肌梗死", "心力衰竭", "椎间盘", "疝")
+_INFECTIOUS_CULTURE_WORDS = ("肺炎", "肺部感染", "支气管炎", "泌尿道感染", "尿路感染", "肾盂肾炎", "膀胱炎", "感染", "脓肿", "败血症", "脓毒", "菌血症")
+_ADMISSION_STATUS_DX_WORDS = ("术后", "状态", "剖宫产史", "瘢痕子宫", "顺产", "活产", "死产", "待产", "临产", "随访", "复查", "携带者", "取内固定")
+
+_MODALITY_SUBSITE_KW = {
+    "胃镜": ("食管", "贲门", "胃", "幽门", "十二指肠", "上消化道", "消化性溃疡"),
+    "肠镜": ("结肠", "直肠", "盲肠", "乙状结肠", "回盲", "大肠", "肛", "痔"),
+    "胶囊内镜": ("小肠", "空肠", "回肠"),
+    "ERCP": ("胆总管", "胆管", "胆道", "胆囊", "胆石", "胰", "壶腹"),
+    "MRCP": ("胆总管", "胆管", "胆道", "胆囊", "胆石", "胰", "壶腹"),
+    "超声内镜": ("食管", "贲门", "胃", "十二指肠", "胆总管", "胆管", "胆道", "胆囊", "胰", "壶腹"),
+    "支气管镜": ("支气管", "气管", "肺"),
+    "喉镜": ("喉", "声带", "会厌", "咽"),
+    "膀胱镜": ("膀胱", "尿道", "前列腺"),
+}
+
+_POS_CONFIRM_CAPABILITY_RULES = (
+    (("CT", "磁共振"), ("脑",), ("脑梗死", "腔隙性梗死", "脑出血", "脑内出血", "蛛网膜下", "硬膜下血肿", "硬膜外血肿", "颅内血肿", "颅内出血", "颅内损伤", "脑挫裂伤", "脑积水", "脑脓肿")),
+    (("CT", "X线"), ("脑",), ("颅骨", "面骨", "鼻骨", "眼眶骨折", "颌骨骨折")),
+    (("脑血管造影",), ("脑",), ("动脉瘤", "血管畸形", "动静脉畸形", "动脉狭窄", "动脉闭塞", "烟雾病")),
+    (("腰椎穿刺",), ("脑",), ("脑膜炎", "脑炎", "蛛网膜下")),
+    (("超声", "CT", "磁共振"), ("颈",), ("甲状腺结节", "结节性甲状腺肿", "甲状腺囊肿", "甲状腺炎", "淋巴结炎", "颈部脓肿", "甲状舌管囊肿", "鳃裂囊肿")),
+    (("喉镜",), ("咽喉",), ("声带息肉", "声带小结", "声带麻痹", "喉麻痹", "会厌炎", "喉炎", "咽喉肿物")),
+    (("CT", "磁共振"), ("咽喉", "颈"), ("鼻窦炎", "中耳炎", "乳突炎", "扁桃体周围脓肿", "咽旁脓肿", "腮腺肿物", "颌下腺结石")),
+    (("CT", "X线"), ("肺",), ("肺炎", "肺部感染", "支气管肺炎", "肺脓肿", "支气管扩张", "细支气管扩张", "气胸", "胸腔积液", "脓胸", "肺结核", "肺不张", "肺大疱", "肋骨骨折", "胸骨骨折")),
+    (("CT",), ("肺",), ("肺栓塞", "肺间质纤维化", "间质性肺疾病", "纵隔肿物")),
+    (("心脏超声",), ("心",), ("瓣膜", "二尖瓣", "主动脉瓣", "三尖瓣", "心包积液", "心肌病", "扩张型心肌病", "肥厚型心肌病", "室间隔缺损", "房间隔缺损", "动脉导管未闭", "感染性心内膜炎")),
+    (("胃镜", "超声内镜"), ("腹",), ("食管炎", "食管溃疡", "食管静脉曲张", "食管息肉", "胃炎", "胃溃疡", "十二指肠溃疡", "十二指肠球炎", "消化性溃疡", "胃息肉", "十二指肠息肉", "贲门撕裂")),
+    (("肠镜",), ("腹",), ("结肠息肉", "直肠息肉", "结肠炎", "直肠炎", "溃疡性结肠炎", "克罗恩病", "肠憩室", "内痔", "混合痔")),
+    (("胶囊内镜",), ("腹",), ("小肠溃疡", "小肠息肉", "克罗恩病")),
+    (("MRCP", "ERCP", "超声内镜"), ("腹",), ("胆总管结石", "胆管结石", "肝内胆管结石", "胆管炎", "胆管狭窄", "胆囊结石", "胰管结石", "胰腺炎")),
+    (("CT", "磁共振"), ("腹",), ("阑尾炎", "胆囊结石", "胆囊炎", "胆总管结石", "胆管结石", "胆管炎", "胰腺炎", "肠梗阻", "消化道穿孔", "胃穿孔", "十二指肠穿孔", "肠穿孔", "肝脓肿", "肝囊肿", "肝硬化", "脾破裂", "腹腔脓肿", "腹膜炎", "肠套叠", "腹股沟疝", "腹股沟斜疝", "腹股沟直疝", "股疝", "脐疝", "切口疝", "腹壁疝")),
+    (("X线",), ("腹",), ("肠梗阻", "消化道穿孔", "胃穿孔", "十二指肠穿孔", "肠穿孔")),
+    (("超声",), ("腹",), ("胆囊结石", "胆囊息肉", "胆囊炎", "阑尾炎", "胰腺炎", "肠套叠", "幽门肥厚", "肝脓肿", "肝囊肿", "脂肪肝", "肝硬化", "腹腔积液", "腹水", "腹股沟疝", "腹股沟斜疝", "腹股沟直疝", "脐疝", "切口疝")),
+    (("CT", "超声"), ("泌尿",), ("肾结石", "输尿管结石", "膀胱结石", "泌尿系结石", "尿路结石", "肾积水", "输尿管积水", "肾囊肿", "多囊肾", "前列腺增生", "鞘膜积液", "精索静脉曲张", "睾丸扭转", "附睾炎")),
+    (("磁共振",), ("泌尿",), ("肾囊肿", "肾积水", "前列腺增生")),
+    (("X线",), ("泌尿",), ("肾结石", "输尿管结石", "膀胱结石", "泌尿系结石")),
+    (("膀胱镜",), ("泌尿",), ("膀胱结石", "膀胱息肉", "膀胱炎", "尿道狭窄")),
+    (("超声", "磁共振", "CT"), ("盆",), ("子宫肌瘤", "子宫腺肌", "卵巢囊肿", "卵巢扭转", "黄体破裂", "异位妊娠", "输卵管妊娠", "前置胎盘", "胎盘早剥", "不全流产", "稽留流产", "难免流产", "葡萄胎", "宫腔残留", "子宫内膜息肉", "盆腔炎", "输卵管积水", "盆腔脓肿", "巴氏腺囊肿", "前庭大腺囊肿", "子宫脱垂")),
+    (("超声", "磁共振", "X线"), ("乳腺",), ("乳腺增生", "乳腺结节", "乳腺囊肿", "乳腺炎", "乳腺脓肿")),
+    (("CT", "磁共振"), ("脊柱",), ("椎间盘", "椎管狭窄", "脊椎滑脱", "腰椎滑脱", "颈椎病", "颈椎骨折", "胸椎骨折", "腰椎骨折", "骶骨骨折", "椎体骨折", "脊柱骨折")),
+    (("X线",), ("脊柱",), ("颈椎骨折", "胸椎骨折", "腰椎骨折", "椎体骨折", "脊柱骨折", "脊椎滑脱", "腰椎滑脱", "脊柱侧弯")),
+    (("X线", "CT"), ("骨",), ("骨折", "脱位", "骨关节炎", "骨髓炎")),
+    (("磁共振",), ("骨",), ("骨折", "脱位", "半月板", "韧带", "肩袖", "肌腱", "滑膜炎", "股骨头坏死", "骨髓炎", "骨关节炎")),
+    (("超声",), ("骨",), ("肩袖", "肌腱", "腱鞘囊肿", "关节积液", "滑膜炎")),
+    (("超声", "CT", "磁共振"), ("血管",), ("静脉曲张", "静脉血栓", "深静脉血栓", "动脉粥样硬化", "动脉狭窄", "动脉闭塞", "动脉栓塞", "动脉瘤", "主动脉夹层", "动静脉内瘘")),
+    (("骨髓穿刺",), ("血液",), ("再生障碍性贫血", "骨髓增生异常", "免疫性血小板减少", "特发性血小板减少")),
+)
+
+_STRICT_NEGATIVE_EXCL_RULES = (
+    (("CT", "磁共振"), ("脑",), ("脑出血", "颅内血肿", "蛛网膜下腔出血", "硬膜下血肿", "硬膜外血肿")),
+    (("CT",), ("肺",), ("气胸", "胸腔积液", "肺脓肿", "肺炎", "肺部感染", "大叶性肺炎", "支气管肺炎", "细菌性肺炎", "支气管扩张")),
+    (("CT",), ("腹",), ("消化道穿孔", "胃肠道穿孔", "胃穿孔", "十二指肠穿孔", "肠梗阻", "急性阑尾炎", "阑尾炎")),
+    (("CT",), ("泌尿",), ("肾结石", "输尿管结石", "泌尿系结石", "肾积水")),
+    (("MRCP", "ERCP"), ("腹",), ("胆总管结石", "胆管结石")),
+    (("胃镜",), ("腹",), ("胃溃疡", "十二指肠溃疡", "消化性溃疡", "反流性食管炎", "胃息肉")),
+    (("肠镜",), ("腹",), ("结肠息肉", "直肠息肉", "溃疡性结肠炎", "内痔")),
+    (("冠脉造影",), ("心",), ("冠状动脉粥样硬化性心脏病", "冠心病", "冠状动脉粥样硬化")),
+    (("脑血管造影",), ("脑",), ("颅内动脉瘤", "脑血管畸形")),
+    (("CT", "X线"), ("骨",), ("骨折", "关节脱位")),
+    (("心脏超声",), ("心",), ("心包积液",)),
+)
+
+
+def _is_cardiac_us(key, region):
+    return key == "心脏超声" or (key == "超声" and region == "心")
+
+
+def _exam_pos_capability(key, kind, region, dx_name, organs):
+    """0.3.7：闭合式“检查—目标病变”阳性与确诊支持白名单；未知组合一律返回 None。"""
+    if not dx_name:
+        return None
+    is_followup = "既往治疗改变" in dx_name
+    base_dx = dx_name.replace("既往治疗改变", "").strip() if is_followup else dx_name
+    if not base_dx or "疾患" in base_dx:
+        return None
+    e_key = "心脏超声" if _is_cardiac_us(key, region) else key
+    e_org = exam_organ(key, region)
+    if "骨质疏松" in base_dx:
+        return "confirm_finding" if e_key == "骨密度" else None
+    if "心肌梗死" in base_dx:
+        if e_key == "冠脉造影":
+            return "confirm_finding"
+        if e_key == "心脏超声":
+            return "wall_motion_only"
+        return None
+    if _has_any(base_dx, ("冠心病", "冠状动脉粥样硬化", "心绞痛", "慢性缺血性心脏病", "缺血性心脏病")):
+        return "confirm_finding" if e_key == "冠脉造影" else None
+    if _has_any(base_dx, ("短暂性脑缺血", "短暂性大脑缺血", "脑动脉供血不足", "脑供血不足", "椎基底动脉综合征")):
+        return "confirm_finding" if e_key == "脑血管造影" else None
+    if _has_any(base_dx, ("慢阻肺", "慢性阻塞性肺")):
+        return "generic_abnormal" if e_key == "肺功能" and site_ok(key, region, organs) else None
+    if _has_any(base_dx, _NON_MORPH_DX_WORDS):
+        return None
+    if kind == "培养":
+        ok = (
+            _has_any(base_dx, _INFECTIOUS_CULTURE_WORDS)
+            and not _has_any(base_dx, ("病毒", "支原体", "衣原体"))
+            and (e_key == "血培养" or site_ok(key, region, organs))
+        )
+        return "confirm_finding" if ok else None
+    if not site_ok(key, region, organs):
+        return None
+    if _has_any(base_dx, ("颈椎", "胸椎", "腰椎", "骶椎", "脊椎", "椎骨")) and e_org != "脊柱":
+        return None
+    sub_kws = _MODALITY_SUBSITE_KW.get(e_key)
+    if sub_kws is not None and not _has_any(base_dx, sub_kws):
+        return None
+    if kind == "功能":
+        if e_key == "心电图":
+            return None
+        return "generic_abnormal"
+    if _has_any(base_dx, _HISTO_NEOPLASM_WORDS):
+        if _has_any(base_dx, ("白血病", "骨髓瘤")):
+            if e_key == "骨髓穿刺":
+                return "confirm_finding"
+            if e_key == "PET":
+                return "structural_only"
+            return None
+        if e_key == "PET":
+            return "structural_only" if is_followup else None
+        if kind in ("影像", "内镜") and e_key not in ("心脏超声",):
+            return "structural_only"
+        return None
+    for m_keys, m_orgs, d_kws in _POS_CONFIRM_CAPABILITY_RULES:
+        if e_key in m_keys and (e_org in m_orgs) and _has_any(base_dx, d_kws):
+            return "structural_only" if is_followup else "confirm_finding"
+    return None
+
+
+def _pathology_can_confirm(e, dx_name, organs, procedures=()):
+    """0.3.7：病理/活检必须对应组织型适应证且匹配取材部位/手术器官，不得因疾患泛称或“非炎性”误匹配。"""
+    if not dx_name or "疾患" in dx_name or _has_any(dx_name, _NOT_FINDING_WORDS) or _has_any(dx_name, _NON_MORPH_DX_WORDS) or _has_any(dx_name, _PATHOLOGY_BLOCKED_WORDS):
+        return False
+    if _has_any(dx_name, ("白血病", "骨髓瘤")):
+        return "骨髓" in (e.get("name") or "")
+    if e.get("region") and not site_ok(e.get("key", ""), e.get("region"), set(organs or ())):
+        return False
+    if e.get("name") == "术后病理":
+        if not procedures:
+            return False
+        a0 = procedures[0]
+        if not takes_tissue(a0):
+            return False
+        aname = a0.get("name") or ""
+        a_orgs = dx_organs(aname, "")
+        fam = proc_family(aname)
+        org_ok = same_organ(aname, dx_name) or bool(set(organs or ()) & a_orgs) or (fam in FAMILY_DX_RE and family_ok(fam, dx_name))
+        if not org_ok:
+            return False
+    return _has_any(dx_name.replace("非炎性", ""), _PATHOLOGY_CAPABLE_WORDS)
+
+
+def _apply_exam_pos_finding(e, cap, fname):
+    if cap == "generic_abnormal":
+        e["finding"] = "可见异常改变"
+        e["can_confirm"] = False
+    elif cap == "wall_motion_only":
+        e["finding"] = "可见节段性室壁运动异常"
+        e["can_confirm"] = False
+    elif cap == "structural_only":
+        e["finding"] = "可见黏膜新生物，待病理明确" if e["kind"] == "内镜" else "可见占位性病变"
+        e["can_confirm"] = False
+    else:
+        if e["key"] == "骨密度" and "骨质疏松" in fname:
+            e["finding"] = "符合骨质疏松改变"
+        elif e["kind"] == "培养":
+            e["finding"] = "培养出致病菌"
+        else:
+            e["finding"] = FINDING_TEXT.get(e["kind"], "符合{f}表现").format(f=fname)
+        e["can_confirm"] = True
+
+
+def exam_lifts(stats, strata, organs=None, fname=None):
+    """节层以内最细的非空层里，各检查的出现率（使用频率比值，非诊断似然比）是全局层的几倍。"""
     t = stats.get("exams") or {}
     fine = next((t[s] for s in fine_strata(strata) if (t.get(s) or {}).get("items")), None)
     glob = t.get("*") or {}
@@ -471,45 +670,56 @@ def exam_lifts(stats, strata, organs=None):
     for item, n in fine["items"].items():
         key, _, region = item.partition("|")
         if diag_eligible(key) and glob["items"].get(item) and (organs is None or site_ok(key, region, organs)):
+            if fname is not None and _exam_pos_capability(key, KIND_OF.get(key, "其他"), region, fname, organs or set()) is None:
+                continue
             out[item] = (n / max(1, fine["n"])) / (glob["items"][item] / max(1, glob["n"]))
     return out
 
 
-def mark_exam_findings(stats, strata, exams, fname, organs=None):
-    """没有数值的检查：节层以内出现率至少是全局层 DIAG_LIFT 倍、又不是常规化验和心电图、部位和诊断的器官对得上的算诊断相关，
-    一定异常，按检查类型写"符合××表现"；培养诊断相关的写"培养出致病菌"，其余"未培养出致病菌"；其余一律"未见明显异常"
-    （部位对不上的伴随检查也是）。病理、活检写"符合××"。fname 是写进结果的诊断名（化疗这类住院是原发病），None 表示不写诊断。"""
-    lifts = exam_lifts(stats, strata, organs)
+def mark_exam_findings(stats, strata, exams, fname, organs=None, procedures=()):
+    """0.3.6：高 Lift、guaranteed、无 Lift 后备与病理/取材全部统一经过检查能力与结论强度约束。"""
+    lifts = exam_lifts(stats, strata, organs, fname=fname)
     thr = DIAG_LIFT if organs is None else DIAG_LIFT_SITE
+    org_set = set(organs or ())
     for e in exams:
+        e.pop("can_confirm", None)
         if e["items"]:
             continue
         if e["key"] in ("病理", "活检"):
-            e["finding"] = f"符合{fname}" if fname else "未见恶性证据"
-            e["abnormal"] = bool(fname)
+            can_p = bool(fname) and _pathology_can_confirm(e, fname, org_set, procedures)
+            e["finding"] = f"符合{fname}" if can_p else ("慢性炎性改变" if e.get("name") == "术后病理" else "未见恶性证据")
+            e["abnormal"] = can_p
+            e["diagnostic"] = can_p
+            e["can_confirm"] = can_p
             continue
         if "abnormal" not in e:
             continue
         item = f"{e['key']}|{e['region'] or ''}"
-        # 0.1.11：补进来的那项（guaranteed，比值 ≥ DIAG_ADD_MIN、部位对得上）一定算诊断相关
-        diag = bool(fname) and (lifts.get(item, 0.0) >= thr or bool(e.get("guaranteed")))
+        cap = _exam_pos_capability(e["key"], e["kind"], e["region"], fname, org_set) if fname else None
+        diag = cap is not None and (lifts.get(item, 0.0) >= thr or bool(e.get("guaranteed")))
         e["abnormal"] = diag
         e["diagnostic"] = diag
-        if e["kind"] == "培养":
-            e["finding"] = "培养出致病菌" if diag else "未培养出致病菌"
-        elif diag:
-            e["finding"] = FINDING_TEXT.get(e["kind"], "符合{f}表现").format(f=fname)
+        if diag:
+            _apply_exam_pos_finding(e, cap, fname)
         else:
-            e.pop("finding", None)
-    if fname and organs and not any(e.get("diagnostic") for e in exams):
-        cands = [e for e in exams if not e["items"] and "abnormal" in e and diag_eligible(e["key"])
-                 and e["kind"] in ("造影", "内镜", "影像") and site_ok(e["key"], e["region"], organs)]
+            if e["kind"] == "培养":
+                e["finding"] = "未培养出致病菌"
+            else:
+                e.pop("finding", None)
+    if fname and org_set and _has_any(fname, _EXPLICIT_STRUCTURAL_WORDS + _HISTO_NEOPLASM_WORDS + ("心肌梗死",)) and not any(e.get("diagnostic") for e in exams):
+        cands = []
+        for e in exams:
+            if e["items"] or "abnormal" not in e or not diag_eligible(e["key"]) or e["kind"] not in ("造影", "内镜", "影像"):
+                continue
+            cap = _exam_pos_capability(e["key"], e["kind"], e["region"], fname, org_set)
+            if cap is not None:
+                cands.append((e, cap))
         if cands:
             _kind_p = {"造影": 0, "内镜": 1, "影像": 2}
             _key_p = {"冠脉造影": 0, "脑血管造影": 1, "CT": 2, "磁共振": 3, "MRCP": 4, "ERCP": 5, "胃镜": 6, "肠镜": 7, "超声": 8, "心脏超声": 9, "X线": 10}
-            best_e = min(cands, key=lambda e: (_kind_p.get(e["kind"], 9), _key_p.get(e["key"], 99), e.get("id") or ""))
+            best_e, best_cap = min(cands, key=lambda ec: (_kind_p.get(ec[0]["kind"], 9), _key_p.get(ec[0]["key"], 99), ec[0].get("id") or ""))
             best_e["abnormal"] = best_e["diagnostic"] = True
-            best_e["finding"] = FINDING_TEXT.get(best_e["kind"], "符合{f}表现").format(f=fname)
+            _apply_exam_pos_finding(best_e, best_cap, fname)
 
 
 def _inv_group(key):
@@ -520,11 +730,10 @@ def _inv_group(key):
 
 
 def ensure_diagnostic(stats, strata, exams, fname, organs=None):
-    """0.1.9：一项诊断相关的检查都没抽到时，补出现率比值最高的那项（比值要够 DIAG_LIFT，部位要对得上；0.2.0.1：不补已有同大类的有创检查）。
-    返回要补的 (检查, 部位)，没有返回 None。"""
+    """0.1.9 / 0.3.6：一项诊断相关的检查都没抽到时，只补通过正检能力校验且出现率比值最高的检查。"""
     if not fname:
         return None
-    lifts = exam_lifts(stats, strata, organs)
+    lifts = exam_lifts(stats, strata, organs, fname=fname)
     thr, add_min = (DIAG_LIFT, DIAG_LIFT) if organs is None else (DIAG_LIFT_SITE, DIAG_ADD_MIN)
     have = {f"{e['key']}|{e['region'] or ''}" for e in exams}
     if any(lifts.get(x, 0.0) >= thr for x in have):
@@ -1356,14 +1565,264 @@ def _child_dose_ok(p, did, alias, dose):
     return True
 
 
+_ORAL_FORM_WORDS = ("片", "胶囊", "丸", "颗粒", "散", "口服液", "混悬液", "糖浆", "滴丸", "肠溶")
+_PARENTERAL_ROUTES = ("静滴", "静脉滴注", "静推", "静注", "静脉注射", "泵入", "肌注", "肌肉注射", "皮下", "皮下注射", "滴注", "静脉")
+
+
+def _med_route_form_ok(did, alias, dose, route):
+    """0.3.5：拦截剂型与给药途径冲突（口服片剂配静滴、非口服针剂配口服等）。"""
+    r = (route or "").strip()
+    if not r:
+        return True
+    al, ds = alias or "", dose or ""
+    if ("口服" in r) and (_has_any(al, ("注射", "针")) or did in NO_ORAL):
+        return False
+    if _has_any(r, _PARENTERAL_ROUTES) and (_has_any(al, _ORAL_FORM_WORDS) or _has_any(ds, ("片", "粒", "丸", "袋"))):
+        return False
+    if _has_any(al, ("吸入", "气雾", "雾化")) and (r == "口服" or _has_any(r, _PARENTERAL_ROUTES)):
+        return False
+    return True
+
+
+_LAB_COMORB_HINTS = (
+    (("贫血",), ("血常规",), ("HGB",), ("偏低",)),
+    (("低蛋白", "低白蛋白", "营养不良"), ("肝功能",), ("ALB",), ("偏低",)),
+    (("低钾",), ("电解质",), ("K",), ("偏低",)),
+    (("高钾",), ("电解质",), ("K",), ("偏高",)),
+    (("低钠",), ("电解质",), ("NA",), ("偏低",)),
+    (("高钠",), ("电解质",), ("NA",), ("偏高",)),
+    (("低钙",), ("电解质",), ("CA",), ("偏低",)),
+    (("电解质紊乱",), ("电解质",), ("K", "NA", "CL", "CA"), ("偏低", "偏高")),
+    (("高尿酸", "痛风"), ("肾功能",), ("UA",), ("偏高",)),
+    (("高脂", "血脂", "胆固醇", "甘油三酯"), ("血脂",), ("TC", "TG", "LDL"), ("偏高",)),
+    (("肝功能", "转氨酶", "黄疸", "胆红素"), ("肝功能",), ("ALT", "AST", "TBIL"), ("偏高",)),
+    (("肾功能", "肾衰", "肾损伤", "慢性肾", "尿毒症", "氮质"), ("肾功能",), ("CREA", "BUN"), ("偏高",)),
+    (("糖尿病", "高血糖", "糖耐量"), ("血糖", "糖化血红蛋白"), ("GLU", "HBA1C"), ("偏高",)),
+    (("凝血", "纤溶"), ("凝血", "D二聚体"), ("PT", "APTT", "INR", "DD"), ("偏高",)),
+    (("肺部感染", "肺炎", "支气管肺炎", "细菌性肺炎", "泌尿道感染", "尿路感染"), ("血常规", "C反应蛋白", "降钙素原"), ("WBC", "CRP", "PCT"), ("偏高",)),
+    (("菌血症", "脓毒", "败血症"), ("降钙素原", "C反应蛋白"), ("PCT", "CRP"), ("偏高",)),
+    (("心肌梗死",), ("心肌坏死标志物", "心肌酶", "肌钙蛋白"), ("TNI",), ("偏高",)),
+    (("胰腺炎",), ("淀粉酶",), ("AMY",), ("偏高",)),
+)
+
+_INCIDENTAL_CAPABILITY_RULES = (
+    (("CT", "磁共振", "超声", "X线"), ("肺",), ("胸腔积液", "肺大疱", "肺气肿", "肺部感染", "肺炎", "肺结节", "支气管扩张")),
+    (("CT", "磁共振", "超声"), ("腹",), ("脂肪肝", "肝囊肿", "肝血管瘤", "胆囊结石", "胆囊息肉", "胆囊炎", "脾大", "腹腔积液", "腹水", "阑尾粪石")),
+    (("CT", "磁共振", "超声"), ("泌尿",), ("肾囊肿", "肾结石", "输尿管结石", "肾积水", "前列腺增生")),
+    (("CT", "磁共振", "超声"), ("盆",), ("子宫肌瘤", "子宫平滑肌瘤", "卵巢囊肿", "盆腔积液")),
+    (("CT", "磁共振", "超声"), ("乳腺",), ("乳腺结节", "乳腺增生", "乳腺纤维腺瘤")),
+    (("CT", "磁共振", "超声"), ("颈",), ("甲状腺结节", "甲状腺囊肿")),
+    (("超声",), ("血管",), ("颈动脉斑块", "动脉粥样硬化", "下肢静脉血栓", "深静脉血栓")),
+    (("CT", "磁共振"), ("脑",), ("脑萎缩", "腔隙性脑梗死", "大脑动脉粥样硬化", "脑白质病变")),
+    (("心脏超声",), ("心",), ("瓣膜反流", "二尖瓣反流", "三尖瓣反流", "主动脉瓣反流", "心包积液", "左室舒张功能减退", "室壁运动异常")),
+    (("胃镜",), ("腹",), ("慢性胃炎", "浅表性胃炎", "萎缩性胃炎", "反流性食管炎", "胃溃疡", "十二指肠溃疡", "胃息肉")),
+    (("肠镜",), ("腹",), ("结肠息肉", "直肠息肉", "结肠炎", "内痔", "混合痔", "肛乳头肥大")),
+    (("心电图", "动态心电图"), ("心",), ("心房颤动", "房颤", "窦性心动过速", "窦性心动过缓", "室性早搏", "房性早搏", "房室传导阻滞", "束支传导阻滞")),
+    (("骨密度",), ("骨",), ("骨质疏松", "骨量减少")),
+)
+
+_DELIVERY_PROC_WORDS = ("剖宫产", "分娩", "顺产", "助产", "产钳", "胎头吸引", "臀位")
+_ABORTION_PROC_WORDS = ("清宫", "刮宫", "流产")
+
+
+def _incidental_capable(e, cname):
+    """0.3.6：仅允许检查模态+部位具备直接识别能力的形态学/心电偶发所见（严禁凭无病理影像确诊良恶性肿瘤或肺动脉高压/心衰/肾衰/阴道炎）。"""
+    e_key = "心脏超声" if _is_cardiac_us(e["key"], e.get("region")) else e["key"]
+    if not cname or _has_any(cname, _HISTO_NEOPLASM_WORDS + ("良性肿瘤",)) or _has_any(cname, _NON_MORPH_DX_WORDS):
+        if not (_has_any(cname, ("心房颤动", "房颤", "心动过速", "心动过缓", "早搏", "传导阻滞", "骨质疏松")) and e_key in ("心电图", "动态心电图", "骨密度")):
+            return False
+    e_org = exam_organ(e["key"], e.get("region"))
+    for m_keys, m_orgs, c_kws in _INCIDENTAL_CAPABILITY_RULES:
+        if e_key in m_keys and (e_org in m_orgs) and _has_any(cname, c_kws):
+            return True
+    return False
+
+
+def _assign_intraday_times(jid, los, exams, meds, procedures):
+    """0.3.6：为检查、用药与手术分配确定性日内 HH:MM，严格保证同日开停药 start_hm <= stop_hm。"""
+    trng = random.Random(seed_of(jid, "intraday_v035"))
+    for e in exams:
+        od, rd = e["order_day"], e["result_day"]
+        e["order_hm"] = "07:30" if od == 0 else trng.choice(("08:15", "09:00", "10:00"))
+        if rd == 0:
+            e["result_hm"] = "07:30"
+        elif e.get("with_proc"):
+            e["result_hm"] = "16:30"
+        elif e["kind"] == "检验":
+            e["result_hm"] = trng.choice(("07:45", "11:20", "14:20"))
+        else:
+            e["result_hm"] = trng.choice(("09:30", "11:30", "14:20", "15:45"))
+        if od == rd and e["result_hm"] < e["order_hm"]:
+            e["order_hm"] = e["result_hm"]
+    for m in meds:
+        m["start_hm"] = "07:30" if m["start_day"] == 0 else trng.choice(("08:00", "09:00", "11:00"))
+        m["stop_hm"] = "23:59" if m["stop_day"] >= los else "23:30"
+    for a in procedures:
+        do_d = a["do_day"]
+        dec_d = a["decide_day"]
+        a["decide_hm"] = "08:00"
+        a["do_hm"] = "17:00" if do_d == 0 else "13:00"
+        for e in exams:
+            if e.get("diagnostic") and not e.get("with_proc") and e["result_day"] == dec_d:
+                if dec_d == 0:
+                    e["result_hm"] = "07:30"
+                    e["order_hm"] = "07:30"
+                elif e["result_hm"] >= "08:00":
+                    e["result_hm"] = "07:45"
+                    if e["order_day"] == e["result_day"] and e["order_hm"] > "07:45":
+                        e["order_hm"] = "07:30"
+
+
+def _lab_supports_dx(e, dx_name):
+    if e.get("recheck") or not e.get("items") or not dx_name:
+        return False
+    for c_kws, panel_keys, item_keys, want_flags in _LAB_COMORB_HINTS:
+        if "电解质紊乱" in c_kws and "电解质紊乱" not in dx_name:
+            continue
+        if _has_any(dx_name, c_kws) and e["key"] in panel_keys:
+            if any(it.get("key") in item_keys and it.get("flag") in want_flags for it in e["items"]):
+                return True
+    return False
+
+
+def _primary_confirm_cands(exams, dx_name=""):
+    """0.3.6：仅接受经正检/病理能力认证的检查（can_confirm=True），或指标及方向严格匹配的专项检验；彻底移除无差别异常检验兜底。"""
+    out = []
+    for e in exams:
+        if e["result_day"] < 1 or e.get("prior") or e.get("recheck"):
+            continue
+        if e.get("can_confirm") or _lab_supports_dx(e, dx_name):
+            out.append(e)
+    return out
+
+
+def _pick_excl_evidence(diff_name, d_orgs, exams, los):
+    """0.3.6：严格分离“阴性排除白名单”；删除 clarify_diag 阳性排他、删除跨部位 or、删除非特异标志物与静息心电图排除。"""
+    cands = []
+    d_org_set = set(d_orgs or ())
+    for e in sorted(exams, key=lambda x: (0 if x["result_day"] < los else 1, x["result_day"], x.get("result_hm", "00:00"), x["id"])):
+        if e["result_day"] < 1 or e.get("recheck") or e.get("items") or e.get("diagnostic") or e.get("abnormal") or e.get("incidental_findings"):
+            continue
+        if not site_ok(e["key"], e["region"], d_org_set):
+            continue
+        e_key = "心脏超声" if _is_cardiac_us(e["key"], e["region"]) else e["key"]
+        for m_keys, m_orgs, d_kws in _STRICT_NEGATIVE_EXCL_RULES:
+            if e_key in m_keys and bool(set(m_orgs) & d_org_set) and _has_any(diff_name, d_kws):
+                cands.append((e, f"结合{e['name']}未见明显异常"))
+                break
+    return cands[0] if cands else (None, None)
+
+
+def _ground_inpatient_comorbidities(p, los, exams, procedures, dx_events, did, used_excl_ids=()):
+    """0.3.6：出院新增合并症必须绑定严格相容的检验方向/能力受限影像/分娩与器官匹配术式；失败直接删除候选并记账，不再改写 at_admission=True。"""
+    has_surg = bool(procedures)
+    orig_comorbs = list(p.get("comorbidities") or [])
+    ledger = {
+        "before_total": len(orig_comorbs),
+        "admission_known": 0,
+        "inpatient_candidates": 0,
+        "inpatient_grounded": 0,
+        "inpatient_by_source": {"procedure": 0, "lab": 0, "incidental": 0},
+        "ungrounded_inpatient_dropped": 0,
+        "dropped_names": [],
+        "after_total": 0,
+    }
+    keep = []
+    excl_set = set(used_excl_ids or ())
+    for c in orig_comorbs:
+        if c.get("at_admission"):
+            ledger["admission_known"] += 1
+            keep.append(c)
+            continue
+        ledger["inpatient_candidates"] += 1
+        cname = c["name"]
+        if _has_any(cname, ("产后", "产褥", "流产后", "清宫术后", "刮宫术后", "术后")):
+            matched_proc = None
+            if has_surg and procedures[0]["do_day"] >= 0:
+                a0 = procedures[0]
+                aname = a0.get("name") or ""
+                if _has_any(cname, ("产后", "产褥")):
+                    if p["sex"] == "女" and _has_any(aname, _DELIVERY_PROC_WORDS):
+                        matched_proc = a0
+                elif _has_any(cname, ("流产后", "清宫术后", "刮宫术后")):
+                    if p["sex"] == "女" and _has_any(aname, _ABORTION_PROC_WORDS):
+                        matched_proc = a0
+                else:
+                    stem = cname.split("术后")[0]
+                    c_orgs = dx_organs(cname, "")
+                    a_orgs = dx_organs(aname, "")
+                    if (len(stem) >= 2 and stem[:2] in aname) or same_organ(aname, cname) or bool(c_orgs & a_orgs):
+                        matched_proc = a0
+            if matched_proc is not None:
+                d_day = matched_proc["do_day"]
+                d_hm = matched_proc.get("do_hm", "13:00")
+                btxt = f"行{matched_proc['name']}后"
+                c.update(discover_day=d_day, discover_hm=d_hm, evidence_ids=[matched_proc["id"]], basis_text=btxt)
+                if d_day >= 1:
+                    dx_events.append({"id": f"d{did}", "name": cname, "day": d_day, "hm": d_hm, "state": "确诊",
+                                      "evidence_ids": [matched_proc["id"]], "basis_text": btxt, "newly_discovered": True})
+                    did += 1
+                ledger["inpatient_grounded"] += 1
+                ledger["inpatient_by_source"]["procedure"] += 1
+                keep.append(c)
+            else:
+                ledger["ungrounded_inpatient_dropped"] += 1
+                ledger["dropped_names"].append(cname)
+            continue
+        matched_e = None
+        src_kind = None
+        lab_cands = [e for e in exams if e["result_day"] >= 1 and _lab_supports_dx(e, cname)]
+        if lab_cands:
+            matched_e = min(lab_cands, key=lambda x: (0 if x["result_day"] < los else 1, x["result_day"], x.get("result_hm", "00:00"), x["id"]))
+            src_kind = "lab"
+        if matched_e is None:
+            img_cands = [
+                e for e in sorted(exams, key=lambda x: (0 if x["result_day"] < los else 1, x["result_day"], x.get("result_hm", "00:00"), x["id"]))
+                if e["result_day"] >= 1 and e["id"] not in excl_set and not e.get("items") and _incidental_capable(e, cname)
+            ]
+            if img_cands:
+                matched_e = img_cands[0]
+                src_kind = "incidental"
+                matched_e["abnormal"] = True
+                inc = matched_e.setdefault("incidental_findings", [])
+                if cname not in inc:
+                    inc.append(cname)
+        if matched_e is not None:
+            d_day = matched_e["result_day"]
+            d_hm = matched_e.get("result_hm", "11:30")
+            btxt = f"结合{matched_e['name']}结果"
+            c.update(discover_day=d_day, discover_hm=d_hm, evidence_ids=[matched_e["id"]], basis_text=btxt)
+            dx_events.append({"id": f"d{did}", "name": cname, "day": d_day, "hm": d_hm, "state": "确诊",
+                              "evidence_ids": [matched_e["id"]], "basis_text": btxt, "newly_discovered": True})
+            did += 1
+            ledger["inpatient_grounded"] += 1
+            ledger["inpatient_by_source"][src_kind] += 1
+            keep.append(c)
+        else:
+            ledger["ungrounded_inpatient_dropped"] += 1
+            ledger["dropped_names"].append(cname)
+    p["comorbidities"] = keep
+    ledger["after_total"] = len(keep)
+    return did, ledger
+
+
 def _med_entry(stats, rng, p, did, los, n_meds, cls, core):
-    """一种药：别名、剂量、频次、途径各按统计表抽，过 g3 规则及儿童剂量防呆；不过返回 None。"""
+    """一种药：别名、剂量、频次、途径先相容再过 g3 规则及儿童剂量防呆；不过返回 None。"""
     alias = _pick(rng, _sub(stats, "med_alias", did))
     if not alias:
         return None
     dose = _pick(rng, _sub(stats, "med_dose", did)) or ""
     freq = _pick(rng, _sub(stats, "med_freq", did)) or ""
-    route = _pick(rng, _sub(stats, "med_route", did)) or ""
+    raw_routes = _sub(stats, "med_route", did)
+    if raw_routes:
+        compat_routes = {rt: n for rt, n in raw_routes.items() if _med_route_form_ok(did, alias, dose, rt)}
+        if not compat_routes:
+            return None
+        route = _pick(rng, compat_routes) or ""
+    else:
+        route = ""
+    if not _med_route_form_ok(did, alias, dose, route):
+        return None
     if dose and not _child_dose_ok(p, did, alias, dose):
         alt = {d: n for d, n in _sub(stats, "med_dose", did).items()
                if _child_dose_ok(p, did, alias, d) and med_allowed(p, alias, d, freq, route)}
@@ -1664,7 +2123,7 @@ def plan_journey(stats, rng, jid, slot=None):
             added_kb += 1
             i += 1
     exams = dedupe_bare(exams, organs, age=p["age"], dx_name=under or name)
-    if fname and organs and not tkind and not any(
+    if fname and organs and not tkind and _has_any(under or name, _EXPLICIT_STRUCTURAL_WORDS + _HISTO_NEOPLASM_WORDS) and not any(
         not e["items"] and diag_eligible(e["key"]) and e["kind"] in ("造影", "内镜", "影像") and site_ok(e["key"], e["region"], organs)
         for e in exams
     ):
@@ -1676,7 +2135,7 @@ def plan_journey(stats, rng, jid, slot=None):
             next((("超声" if o in ("腹", "泌尿", "盆", "颈", "乳腺") else "CT", BARE_REGION[o])
                   for o in ORGAN_ORDER if o in organs and o in BARE_REGION), (None, None))
         )
-        if dk and (dk, dr or None) not in {(e["key"], e["region"]) for e in exams}:
+        if dk and (dk, dr or None) not in {(e["key"], e["region"]) for e in exams} and _exam_pos_capability(dk, KIND_OF.get(dk, "影像"), dr, fname, organs) is not None:
             diag_rng = random.Random(seed_of(jid, "diag_img_v032"))
             exams.append(_exam(stats, diag_rng, i, dk, dr, los, ctx=lctx))
             i += 1
@@ -1709,14 +2168,21 @@ def plan_journey(stats, rng, jid, slot=None):
     if surgical and rng.random() < 0.6 and takes_tissue(procedures[0]):
         exams.append({"id": f"e{i}", "key": "病理", "region": None, "name": "术后病理", "kind": "病理", "order_day": do_day, "result_day": min(los, do_day + rng.randint(2, 5)), "items": []})
         i += 1
-    mark_exam_findings(stats, strata, exams, under if tkind else finding_label(name, code), organs)
+    mark_exam_findings(stats, strata, exams, under if tkind else finding_label(name, code), organs, procedures=procedures)
     if surgical and do_day is not None:
+        dec_d0 = procedures[0]["decide_day"]
         for e in exams:
             if (e.get("diagnostic") and e["kind"] == "影像" and not e.get("with_proc")
                     and not any(proc_has_exam(a["name"], e["key"]) for a in procedures)
-                    and e["result_day"] > do_day):
-                e["result_day"] = do_day
-                e["order_day"] = min(e["order_day"], do_day)
+                    and e["result_day"] > dec_d0):
+                e["result_day"] = dec_d0
+                e["order_day"] = min(e["order_day"], dec_d0)
+        preop_diag = [e for e in exams if e.get("diagnostic") and not e.get("with_proc") and e["result_day"] <= do_day]
+        if preop_diag:
+            min_diag_d = min(e["result_day"] for e in preop_diag)
+            procedures[0]["decide_day"] = max(procedures[0]["decide_day"], min(do_day, min_diag_d))
+        if do_day == 0:
+            procedures[0]["decide_day"] = 0
     # 0.1.11（第十次合成病历 11）：阳性的培养至少在出院前一天回报（0.1.10 出院当天才回报"培养出致病菌"，照常出院）
     for e in exams:
         if e["kind"] == "培养" and e.get("abnormal") and los >= 1 and e["result_day"] >= los:
@@ -1732,22 +2198,59 @@ def plan_journey(stats, rng, jid, slot=None):
     exam_diag = {"none_reason": nr, "cbc": cbc_sources(stats, strata, lctx, base),
                  "no_cand_detail": no_candidate_detail(stats, strata, organs) if nr == "no_candidate" else None}
     meds = plan_meds(stats, rng, p, strata, los)
+    _assign_intraday_times(jid, los, exams, meds, procedures)
     dx_events, did = [], 1
-    # 0.1.12（第十一次合成病历 13："恶性肿瘤维持性化学治疗？"）：化疗、放疗、复查这类住院是来做已定的治疗，主诊断不走疑似。
-    # 随机数照抽，不改后面的抽签
-    if los >= 2 and rng.random() < P_DX_CHANGE and not tkind:
-        dx_events.append({"id": f"d{did}", "name": name, "day": 0, "state": "疑似"})
-        confirm = min(los, max([e["result_day"] for e in exams] + [1]))
-        dx_events.append({"id": f"d{did + 1}", "name": name, "day": confirm, "state": "确诊"})
+    # 0.3.6：仅在存在通过正检/病理或严格专项检验能力验证的依据时设置疑似→确诊，状态类诊断不入疑似
+    is_status_dx = _has_any(name, _ADMISSION_STATUS_DX_WORDS)
+    want_change = bool(los >= 2 and rng.random() < P_DX_CHANGE and not tkind and not is_status_dx)
+    supp_d1 = _primary_confirm_cands(exams, name) if want_change else []
+    if want_change and not supp_d1 and not (surgical and do_day == 0):
+        shift_cands = [
+            e for e in exams
+            if e["result_day"] == 0 and not e.get("prior") and not e.get("with_proc") and e.get("can_confirm")
+        ]
+        if shift_cands:
+            c0 = shift_cands[0]
+            if surgical and do_day and do_day >= 1:
+                td = min(los, max(1, procedures[0]["decide_day"]))
+                c0["order_day"], c0["result_day"] = 0, td
+                c0["order_hm"] = "07:30"
+                c0["result_hm"] = "07:45" if td == procedures[0]["decide_day"] else "11:30"
+                if procedures[0]["decide_day"] < td:
+                    procedures[0]["decide_day"] = td
+                procedures[0]["decide_hm"] = "08:00"
+            else:
+                sh_rng = random.Random(seed_of(jid, "shift_diag_v035"))
+                td = 1 if los <= 2 else sh_rng.choice((1, 1, 2))
+                c0["order_day"], c0["result_day"] = 0, min(los - 1, td)
+                c0["order_hm"], c0["result_hm"] = "07:30", ("11:30" if los >= 3 else "09:30")
+            supp_d1 = _primary_confirm_cands(exams, name)
+    if want_change and supp_d1:
+        anchor_ev = min(
+            supp_d1,
+            key=lambda e: (
+                0 if e["result_day"] < los else 1,
+                0 if (e.get("diagnostic") or e["kind"] in ("病理", "取材")) else 1,
+                e["result_day"],
+                e.get("result_hm", "00:00"),
+                e["id"],
+            ),
+        )
+        dx_events.append({"id": f"d{did}", "name": name, "day": 0, "hm": "07:30", "state": "疑似", "evidence_ids": []})
+        dx_events.append({
+            "id": f"d{did + 1}", "name": name,
+            "day": anchor_ev["result_day"], "hm": anchor_ev.get("result_hm", "11:30"),
+            "state": "确诊", "evidence_ids": [anchor_ev["id"]], "basis_text": f"结合{anchor_ev['name']}结果",
+        })
         did += 2
     else:
-        dx_events.append({"id": f"d{did}", "name": name, "day": 0, "state": "确诊"})
+        ev0 = [e["id"] for e in exams if e["result_day"] == 0 and (e.get("can_confirm") or _lab_supports_dx(e, name))][:2]
+        dx_events.append({"id": f"d{did}", "name": name, "day": 0, "hm": "07:30", "state": "确诊", "evidence_ids": ev0})
         did += 1
     differentials = []
     ch = code[:1]
     taken = [name] + [c["name"] for c in p["comorbidities"]]
-    # 0.1.11（第十次 M3）：鉴别诊断只取和主诊断同一器官系统的（器官从 ICD-10 结构推，同检查部位核对）。0.1.10 心梗要和脑梗死鉴别：
-    # 循环系统章里心和脑混在一起
+    # 0.1.11（第十次 M3）：鉴别诊断只取和主诊断同一器官系统的（器官从 ICD-10 结构推，同检查部位核对）。
     named = {n: c for c, v in (stats.get("dx_names") or {}).items() if c[:1] == ch and c != code for n in v["items"]}
     pool = set(named) | set(_sub(stats, "dx_names_ch", ch))
     names = sorted(n for n in pool if dx_ok(n, p["sex"], p["age"]) and not any(n in x or x in n for x in taken)
@@ -1755,11 +2258,21 @@ def plan_journey(stats, rng, jid, slot=None):
     if names and rng.random() < P_DIFF:
         for n in rng.sample(names, min(2, len(names))):
             differentials.append(n)
-            dx_events.append({"id": f"d{did}", "name": n, "day": 0, "state": "疑似"})
+            dx_events.append({"id": f"d{did}", "name": n, "day": 0, "hm": "07:30", "state": "疑似", "evidence_ids": []})
             did += 1
-            if rng.random() < P_DIFF_CLOSE and los >= 1:
-                dx_events.append({"id": f"d{did}", "name": n, "day": rng.randint(1, los), "state": "排除"})
-                did += 1
+            want_close = rng.random() < 0.45
+            if want_close and los >= 1:
+                d_orgs = dx_organs(n, named.get(n, "")) or organs
+                ex_ev, ex_basis = _pick_excl_evidence(n, d_orgs, exams, los)
+                if ex_ev is not None:
+                    dx_events.append({
+                        "id": f"d{did}", "name": n,
+                        "day": ex_ev["result_day"], "hm": ex_ev.get("result_hm", "11:30"),
+                        "state": "排除", "evidence_ids": [ex_ev["id"]], "basis_text": ex_basis,
+                    })
+                    did += 1
+    used_excl_ids = {d["evidence_ids"][0] for d in dx_events if d.get("state") == "排除" and d.get("evidence_ids")}
+    did, comorb_ledger = _ground_inpatient_comorbidities(p, los, exams, procedures, dx_events, did, used_excl_ids=used_excl_ids)
     # 0.1.9：伴随症状、主诉症状表都只到节层（0.1.8 退到章层，痔抽到"胸闷""头晕"）
     fs = fine_strata(strata)
     t_sym = _table(stats, "symptoms", fs)
@@ -1899,7 +2412,8 @@ def plan_journey(stats, rng, jid, slot=None):
         daily[-1].update(discharge_vitals(rng, {k: daily[-1][k] for k in ("T", "P", "R", "SBP", "DBP")}, p["age"], v0))
     j = {"journey_id": jid, "contract": CONTRACT_VERSION, "patient": p, "admit_date": fictional_date(jid), "los": los, "surgical": surgical, "surgery_day": do_day,
          "chief": dict({"symptoms": chief, "duration": dur, "source": source}, **extra), "exams": exams, "meds": meds, "procedures": procedures,
-         "dx_events": dx_events, "differentials": differentials, "daily": daily, "exam_target": target, "exam_diag": exam_diag}
+         "dx_events": dx_events, "differentials": differentials, "daily": daily, "exam_target": target, "exam_diag": exam_diag,
+         "comorb_ledger": comorb_ledger}
     if kb_ent:
         j["kb_facts"] = {
             "icd10": kb_ent["icd10"],
@@ -2022,7 +2536,9 @@ def schedule(j, stats, rng):
             out.append(("progress_note", rng.choices(cns, weights=cws)[0], "SUP", sup_day, 2))
     if j["surgical"]:
         if sd >= 1:
-            out.append(("progress_note", "术前小结", "PRE", max(1, sd - 1) if sd > 1 else sd, 3))
+            dec_d = j["procedures"][0]["decide_day"] if j.get("procedures") else sd
+            pre_day = max(1, min(sd, dec_d)) if dec_d >= 1 else (max(1, sd - 1) if sd > 1 else sd)
+            out.append(("progress_note", "术前小结", "PRE", pre_day, 3))
         out.append(("progress_note", "术后首次病程记录", "POST", sd, 4))
     for day in range(1, los):
         if rng.random() < min(1.0, rate):
@@ -2034,6 +2550,53 @@ def schedule(j, stats, rng):
     times = doc_times({"slot_id": j["journey_id"], "skeleton": specs})
     for s in specs:
         s["time"] = times[s["k"]]
+    if j.get("surgical") and j.get("procedures"):
+        a = next((x for x in j["procedures"] if x.get("kind") == "手术"), None)
+        if a is not None:
+            def _to_min(hm):
+                hh, mm = map(int, hm.split(":"))
+                return hh * 60 + mm
+
+            def _to_hm(m):
+                return f"{m // 60:02d}:{m % 60:02d}"
+
+            op_d = a["do_day"]
+            do_m = _to_min(a.get("do_hm") or ("17:00" if op_d == 0 else "13:00"))
+            day_specs = [s for s in specs if s["day"] == op_d]
+            post_k = next((s["k"] for s in day_specs if s["role"] == "POST"), None)
+            pre_specs = [s for s in day_specs if post_k is None or s["k"] < post_k]
+            prev_m, hr_m = -1, None
+            for idx_s, s in enumerate(pre_specs):
+                rem = len(pre_specs) - 1 - idx_s
+                cur_m = _to_min(s["time"])
+                if op_d == 0:
+                    if s["role"] == "HR":
+                        m = min(cur_m, 10 * 60)
+                        hr_m = m
+                    elif s["role"] == "FP" and hr_m is not None:
+                        lo_fp = max(prev_m + 15, hr_m + 60)
+                        hi_fp = min(hr_m + 300, do_m - 20 - 15 * rem)
+                        m = min(hi_fp, max(lo_fp, cur_m))
+                    else:
+                        hi_b = do_m - 20 - 15 * rem
+                        m = min(hi_b, max(prev_m + 15 if idx_s > 0 else 8 * 60, cur_m))
+                else:
+                    hi_b = do_m - 20 - 15 * rem
+                    if s["role"] == "PRE":
+                        m = min(hi_b, max(prev_m + 15 if idx_s > 0 else 9 * 60 + 30, 10 * 60 + 45))
+                    else:
+                        m = min(hi_b, max(prev_m + 15 if idx_s > 0 else 8 * 60, cur_m))
+                s["time"] = _to_hm(m)
+                prev_m = m
+            post_specs = [s for s in day_specs if post_k is not None and s["k"] >= post_k]
+            for idx_p, s in enumerate(post_specs):
+                cur_m = _to_min(s["time"])
+                if idx_p == 0:
+                    m = min(21 * 60, max(cur_m, do_m + 60, (prev_m + 15) if pre_specs else 0))
+                else:
+                    m = min(23 * 60 + 50, max(cur_m, prev_m + 15))
+                s["time"] = _to_hm(m)
+                prev_m = m
     return specs
 
 
@@ -2046,7 +2609,7 @@ def journey_to_draft(j):
     p = j["patient"]
     obs = [{"id": e["id"], "name": e["name"], "kind": e["kind"] if e["kind"] in ("影像", "检验", "内镜", "病理", "功能") else "其他", "order_day": e["order_day"], "result_day": e["result_day"],
             "result": exam_result_text(e)} for e in j["exams"]]
-    jud = [{"day": d["day"], "diagnosis": d["name"], "state": d["state"], "basis": []} for d in j["dx_events"]]
+    jud = [{"day": d["day"], "diagnosis": d["name"], "state": d["state"], "basis": list(d.get("evidence_ids") or ())} for d in j["dx_events"]]
     act = [{"id": a["id"], "kind": a["kind"], "name": a["name"], "side": a["side"], "plan_day": a["decide_day"], "do_day": a["do_day"]} for a in j["procedures"]]
     return {"final_diagnoses": final_diagnoses(j), "presentation": {"chief_complaint": chief_text(j), "history": "", "past_history": "、".join(p["past_history"]), "exam": ""},
             "observations": obs, "judgments": jud, "actions": act}
@@ -2055,9 +2618,12 @@ def journey_to_draft(j):
 def exam_result_text(e):
     if e["items"]:
         return "，".join(f"{x['item']}{x['value']}{x['unit']}" for x in e["items"])
+    inc = [f"提示{x}相关表现" for x in (e.get("incidental_findings") or ())]
     if e.get("finding"):
         # 0.1.9：按检查类型写（mark_exam_findings 给的）：影像"符合××表现"、培养"未培养出致病菌"、病理"符合××"
-        return e["finding"]
+        return "，".join([e["finding"]] + inc) if inc else e["finding"]
+    if inc:
+        return "，".join(inc)
     if e["key"] == "病理":
         return "未见恶性证据"
     if "abnormal" in e:

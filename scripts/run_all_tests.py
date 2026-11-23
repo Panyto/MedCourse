@@ -81,6 +81,22 @@ def main():
         PKGS / "bench_core",
         unset_vars=bench_unset,
     )
+    run_step(
+        "6. s5_kit",
+        [sys.executable, "-B", "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"],
+        PKGS / "s5_kit",
+        extra_py_paths=[
+            PKGS / "s5_kit",
+            PKGS / "medcourse_core",
+            PKGS / "bench_core",
+            RULES / "ruler_g1_core",
+            RULES / "b7_rules",
+            RULES / "g2_core",
+            RULES / "g3_core",
+            RULES / "g45_core",
+            RULES / "g6_core",
+        ],
+    )
     print("\nALL REPOSITORY TESTS AND MANIFEST CHECKS PASSED!", flush=True)
 
 

@@ -17,6 +17,7 @@ PACKAGE_MAP = [
     ("产品开发/S0/bench_core", "packages/bench_core"),
     ("产品开发/S1/gm_tools", "packages/gm_tools"),
     ("产品开发/S1/gold_kit", "packages/gold_kit"),
+    ("产品开发/S5/s5_kit", "packages/s5_kit"),
     ("关1_单篇事实一致/2_代码/ruler_g1_core", "packages/rules/ruler_g1_core"),
     ("关1_单篇事实一致/2_代码/b7_rules", "packages/rules/b7_rules"),
     ("关2_跨文书时序一致/2_代码/g2_core", "packages/rules/g2_core"),
